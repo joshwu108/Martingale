@@ -1,6 +1,6 @@
 # martingale — Design Document
 
-**Status:** M1 draft — awaiting parameterization sign-off before any code under `src/`.
+**Status:** SIGNED OFF — 2026-08-31. Parameterization: Option A (rational simplex).
 
 ---
 
@@ -120,14 +120,12 @@ demands it.
 
 ---
 
-### Parameterization Decision (AWAITING SIGN-OFF)
+### Parameterization Decision — SIGNED OFF (2026-08-31)
 
-> **Current recommendation:** Option A for all T1–T3, T5, T7;
-> Option B only in `campaigns/float_baselines.py` for T4.
->
-> **Action required:** Please confirm or override this choice before
-> proceeding to M2.  Any change to this decision after M2 begins
-> requires schema-level approval.
+**Option A** for all T1–T3, T5, T7.
+**Option B** only in `campaigns/float_baselines.py` for T4.
+
+This decision is now frozen. Any change requires schema-level approval.
 
 ---
 
@@ -335,4 +333,4 @@ See `docs/nonclaims.md` for the full list.  Key non-claims:
 
 | Decision | Options | Status |
 |---|---|---|
-| Policy parameterization | A (simplex), B (integerized softmax), C (polynomial) | **AWAITING SIGN-OFF** |
+| Policy parameterization | A (simplex), B (integerized softmax), C (polynomial) | **Option A — SIGNED OFF 2026-08-31** |

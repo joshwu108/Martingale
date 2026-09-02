@@ -1,0 +1,28 @@
+{
+  "milestone": "M7-e2e",
+  "pipeline": {
+    "n_trajectories": 8,
+    "n_verified": 8,
+    "n_failed": 0,
+    "store_dir": "/var/folders/2p/3_rdxlb53hz5dxjm2f5rr79w0000gn/T/martingale_e2e_main_szhlwrih/store",
+    "ledger_dir": "/var/folders/2p/3_rdxlb53hz5dxjm2f5rr79w0000gn/T/martingale_e2e_main_szhlwrih/ledger"
+  },
+  "sigkill": {
+    "n_trajectories": 3,
+    "n_verified": 3,
+    "n_failed": 0
+  },
+  "is_identity": {
+    "identity_T2_holds": true,
+    "sample_equals_exact_expectation": true,
+    "on_policy_grad": {
+      "(0, 0)": "3/1",
+      "(0, 1)": "7/1"
+    },
+    "is_grad": {
+      "(0, 0)": "3/1",
+      "(0, 1)": "7/1"
+    }
+  },
+  "all_ok": true
+}

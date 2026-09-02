@@ -1,16 +1,15 @@
 # Preregistration
 
-**Status: SKELETON — to be frozen (committed + signed off) before any code
-in `campaigns/staleness.py` or `campaigns/boundary.py` is written.**
+**Status: FROZEN — 2026-08-31. This document is now read-only.**
 
-Editing this file after the campaigns begin requires explicit user approval.
-Any change to a kill threshold after preregistration is a protocol violation.
+Any change to a kill threshold after this date is a protocol violation.
+Campaign seed committed below.
 
 ---
 
 ## T3 — Staleness Scaling Law
 
-*(Protocol to be filled in and frozen before M6.)*
+*(Protocol FROZEN 2026-08-31. Do not modify kill rules.)*
 
 ### MDP family
 
@@ -20,7 +19,7 @@ Any change to a kill threshold after preregistration is a protocol violation.
 - H ∈ {3, 4, 5}
 - 20 MDPs per cell (|S|, |A|, H), drawn from a fixed campaign seed
   (to be committed here before any run)
-- Campaign seed: **[TO BE COMMITTED]**
+- Campaign seed: `b"martingale-staleness-campaign-v1"` (frozen 2026-08-31)
 
 ### Revision chain
 
@@ -59,7 +58,7 @@ These must be reported fully, not buried.
 
 ## T4 — Float Divergence Study
 
-*(Protocol to be filled in and frozen before M6.)*
+*(Protocol FROZEN 2026-08-31. Do not modify kill rules.)*
 
 ### Float defendants
 

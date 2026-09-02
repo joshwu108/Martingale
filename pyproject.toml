@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "martingale"
-version = "0.1.0"
+version = "0.2.0"
 description = "Exact off-policy staleness accounting for asynchronous policy-gradient RL"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -16,12 +16,23 @@ campaigns = [
     "torch>=2.0",
     "numpy>=1.26",
 ]
+prod = [
+    "torch>=2.0",
+    "prometheus-client>=0.20",
+    "click>=8.0",
+]
+
+[project.scripts]
+martingale = "martingale.cli:cli"
 
 [dependency-groups]
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
     "hypothesis>=6.0",
+    "torch>=2.0",
+    "prometheus-client>=0.20",
+    "click>=8.0",
 ]
 
 [tool.pytest.ini_options]

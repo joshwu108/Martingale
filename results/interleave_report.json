@@ -1,0 +1,80 @@
+{
+  "campaign": "interleave-T5",
+  "n_scenarios": 9,
+  "n_ok": 9,
+  "n_fail": 0,
+  "scenarios": [
+    {
+      "label": "baseline_1a_1r",
+      "total_trajectories": 5,
+      "passed": 5,
+      "failed": 0,
+      "ok": true,
+      "errors": []
+    },
+    {
+      "label": "concurrent_2a_2r",
+      "total_trajectories": 8,
+      "passed": 8,
+      "failed": 0,
+      "ok": true,
+      "errors": []
+    },
+    {
+      "label": "concurrent_2a_5r",
+      "total_trajectories": 8,
+      "passed": 8,
+      "failed": 0,
+      "ok": true,
+      "errors": []
+    },
+    {
+      "label": "concurrent_3a_3r",
+      "total_trajectories": 9,
+      "passed": 9,
+      "failed": 0,
+      "ok": true,
+      "errors": []
+    },
+    {
+      "label": "concurrent_2a_4r_6ep",
+      "total_trajectories": 12,
+      "passed": 12,
+      "failed": 0,
+      "ok": true,
+      "errors": []
+    },
+    {
+      "label": "mixed_revisions_2a_4r",
+      "total_trajectories": 8,
+      "passed": 8,
+      "failed": 0,
+      "ok": true,
+      "errors": []
+    },
+    {
+      "label": "sigkill_after_1ep",
+      "total_trajectories": 4,
+      "passed": 4,
+      "failed": 0,
+      "ok": true,
+      "errors": []
+    },
+    {
+      "label": "sigkill_after_2ep",
+      "total_trajectories": 3,
+      "passed": 3,
+      "failed": 0,
+      "ok": true,
+      "errors": []
+    },
+    {
+      "label": "sigkill_after_3ep",
+      "total_trajectories": 3,
+      "passed": 3,
+      "failed": 0,
+      "ok": true,
+      "errors": []
+    }
+  ]
+}

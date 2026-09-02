@@ -126,11 +126,10 @@ def _actor_worker(
 
     episodes_done = 0
     for episode_id in range(cfg.n_episodes_per_actor):
-        # CP1: pre-pin — check for new revision
+        # CP1: pre-pin — check for new revision (drain at most 1 to preserve for mid-traj)
         try:
-            while True:
-                rev = revision_queue.get_nowait()
-                current_revision = rev
+            rev = revision_queue.get_nowait()
+            current_revision = rev
         except Exception:
             pass  # No new revision
 

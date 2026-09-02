@@ -1,0 +1,317 @@
+{
+  "campaign": "T4-boundary",
+  "n_candidates": 1000,
+  "per_variant_stats": {
+    "eps=1/10_variant=float32": {
+      "n_candidates_tested": 9000,
+      "n_flips": 183,
+      "flip_rate_pct": 2.033333333333333,
+      "kill_verdict": "ALIVE",
+      "examples": [
+        {
+          "pi_prob": "4244627/16777180",
+          "b_prob": "23/100",
+          "minimal_pi": "4244627/16777180",
+          "minimal_b": "23/100",
+          "j_offset": 1,
+          "candidate_idx": 12,
+          "flip": true,
+          "flip_type": "exact_clipped_float_not",
+          "variant": "float32",
+          "clip_eps": "1/10"
+        },
+        {
+          "pi_prob": "1291843/2396740",
+          "b_prob": "49/100",
+          "minimal_pi": "1291843/2396740",
+          "minimal_b": "49/100",
+          "j_offset": 1,
+          "candidate_idx": 16,
+          "flip": true,
+          "flip_type": "exact_clipped_float_not",
+          "variant": "float32",
+          "clip_eps": "1/10"
+        },
+        {
+          "pi_prob": "4982823/16777180",
+          "b_prob": "27/100",
+          "minimal_pi": "4982823/16777180",
+          "minimal_b": "27/100",
+          "j_offset": 1,
+          "candidate_idx": 18,
+          "flip": true,
+          "flip_type": "exact_clipped_float_not",
+          "variant": "float32",
+          "clip_eps": "1/10"
+        },
+        {
+          "pi_prob": "143/250",
+          "b_prob": "13/25",
+          "minimal_pi": "143/250",
+          "minimal_b": "13/25",
+          "j_offset": 0,
+          "candidate_idx": 31,
+          "flip": true,
+          "flip_type": "float_clipped_exact_not",
+          "variant": "float32",
+          "clip_eps": "1/10"
+        },
+        {
+          "pi_prob": "14579371/16777180",
+          "b_prob": "79/100",
+          "minimal_pi": "8491/9771",
+          "minimal_b": "79/100",
+          "j_offset": 1,
+          "candidate_idx": 34,
+          "flip": true,
+          "flip_type": "exact_clipped_float_not",
+          "variant": "float32",
+          "clip_eps": "1/10"
+        }
+      ]
+    },
+    "eps=1/10_variant=float64": {
+      "n_candidates_tested": 9000,
+      "n_flips": 0,
+      "flip_rate_pct": 0.0,
+      "kill_verdict": "DEAD",
+      "examples": []
+    },
+    "eps=1/5_variant=float32": {
+      "n_candidates_tested": 9000,
+      "n_flips": 0,
+      "flip_rate_pct": 0.0,
+      "kill_verdict": "DEAD",
+      "examples": []
+    },
+    "eps=1/5_variant=float64": {
+      "n_candidates_tested": 9000,
+      "n_flips": 21,
+      "flip_rate_pct": 0.23333333333333334,
+      "kill_verdict": "ALIVE",
+      "examples": [
+        {
+          "pi_prob": "21/50",
+          "b_prob": "7/20",
+          "minimal_pi": "21/50",
+          "minimal_b": "7/20",
+          "j_offset": 0,
+          "candidate_idx": 60,
+          "flip": true,
+          "flip_type": "float_clipped_exact_not",
+          "variant": "float64",
+          "clip_eps": "1/5"
+        },
+        {
+          "pi_prob": "171/250",
+          "b_prob": "57/100",
+          "minimal_pi": "171/250",
+          "minimal_b": "57/100",
+          "j_offset": 0,
+          "candidate_idx": 113,
+          "flip": true,
+          "flip_type": "float_clipped_exact_not",
+          "variant": "float64",
+          "clip_eps": "1/5"
+        },
+        {
+          "pi_prob": "21/50",
+          "b_prob": "7/20",
+          "minimal_pi": "21/50",
+          "minimal_b": "7/20",
+          "j_offset": 0,
+          "candidate_idx": 115,
+          "flip": true,
+          "flip_type": "float_clipped_exact_not",
+          "variant": "float64",
+          "clip_eps": "1/5"
+        },
+        {
+          "pi_prob": "171/250",
+          "b_prob": "57/100",
+          "minimal_pi": "171/250",
+          "minimal_b": "57/100",
+          "j_offset": 0,
+          "candidate_idx": 143,
+          "flip": true,
+          "flip_type": "float_clipped_exact_not",
+          "variant": "float64",
+          "clip_eps": "1/5"
+        },
+        {
+          "pi_prob": "21/50",
+          "b_prob": "7/20",
+          "minimal_pi": "21/50",
+          "minimal_b": "7/20",
+          "j_offset": 0,
+          "candidate_idx": 205,
+          "flip": true,
+          "flip_type": "float_clipped_exact_not",
+          "variant": "float64",
+          "clip_eps": "1/5"
+        }
+      ]
+    }
+  },
+  "cumulative_product_study": [
+    {
+      "horizon": 16,
+      "variant": "float32",
+      "n_trials": 200,
+      "n_flips": 0
+    },
+    {
+      "horizon": 16,
+      "variant": "float64",
+      "n_trials": 200,
+      "n_flips": 0
+    },
+    {
+      "horizon": 64,
+      "variant": "float32",
+      "n_trials": 200,
+      "n_flips": 0
+    },
+    {
+      "horizon": 64,
+      "variant": "float64",
+      "n_trials": 200,
+      "n_flips": 0
+    },
+    {
+      "horizon": 256,
+      "variant": "float32",
+      "n_trials": 200,
+      "n_flips": 0
+    },
+    {
+      "horizon": 256,
+      "variant": "float64",
+      "n_trials": 200,
+      "n_flips": 0
+    }
+  ],
+  "kill_verdict": "DEAD",
+  "flip_examples": [
+    {
+      "pi_prob": "4244627/16777180",
+      "b_prob": "23/100",
+      "minimal_pi": "4244627/16777180",
+      "minimal_b": "23/100",
+      "j_offset": 1,
+      "candidate_idx": 12,
+      "flip": true,
+      "flip_type": "exact_clipped_float_not",
+      "variant": "float32",
+      "clip_eps": "1/10"
+    },
+    {
+      "pi_prob": "1291843/2396740",
+      "b_prob": "49/100",
+      "minimal_pi": "1291843/2396740",
+      "minimal_b": "49/100",
+      "j_offset": 1,
+      "candidate_idx": 16,
+      "flip": true,
+      "flip_type": "exact_clipped_float_not",
+      "variant": "float32",
+      "clip_eps": "1/10"
+    },
+    {
+      "pi_prob": "4982823/16777180",
+      "b_prob": "27/100",
+      "minimal_pi": "4982823/16777180",
+      "minimal_b": "27/100",
+      "j_offset": 1,
+      "candidate_idx": 18,
+      "flip": true,
+      "flip_type": "exact_clipped_float_not",
+      "variant": "float32",
+      "clip_eps": "1/10"
+    },
+    {
+      "pi_prob": "143/250",
+      "b_prob": "13/25",
+      "minimal_pi": "143/250",
+      "minimal_b": "13/25",
+      "j_offset": 0,
+      "candidate_idx": 31,
+      "flip": true,
+      "flip_type": "float_clipped_exact_not",
+      "variant": "float32",
+      "clip_eps": "1/10"
+    },
+    {
+      "pi_prob": "14579371/16777180",
+      "b_prob": "79/100",
+      "minimal_pi": "8491/9771",
+      "minimal_b": "79/100",
+      "j_offset": 1,
+      "candidate_idx": 34,
+      "flip": true,
+      "flip_type": "exact_clipped_float_not",
+      "variant": "float32",
+      "clip_eps": "1/10"
+    },
+    {
+      "pi_prob": "21/50",
+      "b_prob": "7/20",
+      "minimal_pi": "21/50",
+      "minimal_b": "7/20",
+      "j_offset": 0,
+      "candidate_idx": 60,
+      "flip": true,
+      "flip_type": "float_clipped_exact_not",
+      "variant": "float64",
+      "clip_eps": "1/5"
+    },
+    {
+      "pi_prob": "171/250",
+      "b_prob": "57/100",
+      "minimal_pi": "171/250",
+      "minimal_b": "57/100",
+      "j_offset": 0,
+      "candidate_idx": 113,
+      "flip": true,
+      "flip_type": "float_clipped_exact_not",
+      "variant": "float64",
+      "clip_eps": "1/5"
+    },
+    {
+      "pi_prob": "21/50",
+      "b_prob": "7/20",
+      "minimal_pi": "21/50",
+      "minimal_b": "7/20",
+      "j_offset": 0,
+      "candidate_idx": 115,
+      "flip": true,
+      "flip_type": "float_clipped_exact_not",
+      "variant": "float64",
+      "clip_eps": "1/5"
+    },
+    {
+      "pi_prob": "171/250",
+      "b_prob": "57/100",
+      "minimal_pi": "171/250",
+      "minimal_b": "57/100",
+      "j_offset": 0,
+      "candidate_idx": 143,
+      "flip": true,
+      "flip_type": "float_clipped_exact_not",
+      "variant": "float64",
+      "clip_eps": "1/5"
+    },
+    {
+      "pi_prob": "21/50",
+      "b_prob": "7/20",
+      "minimal_pi": "21/50",
+      "minimal_b": "7/20",
+      "j_offset": 0,
+      "candidate_idx": 205,
+      "flip": true,
+      "flip_type": "float_clipped_exact_not",
+      "variant": "float64",
+      "clip_eps": "1/5"
+    }
+  ]
+}
