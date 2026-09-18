@@ -78,6 +78,9 @@ class CheckerDaemon:
         self._store = store
         self._config = config
         self._checked_keys: set[tuple[int, int]] = set()  # (actor_id, episode_id)
+        self._cumulative_checked: int = 0
+        self._cumulative_forgeries: int = 0
+        self._last_scan_metrics: Optional[DaemonMetrics] = None
 
         # Import checker (no martingale imports — isolation enforced)
         _root = Path(__file__).parent.parent.parent
@@ -132,12 +135,17 @@ class CheckerDaemon:
         _SCAN_DURATION.observe(elapsed_ms)
         _LAST_SCAN_OK.set(1 if ok else 0)
 
-        return DaemonMetrics(
+        self._cumulative_checked += n_checked
+        self._cumulative_forgeries += n_forgeries
+
+        metrics = DaemonMetrics(
             total_checked=n_checked,
             forgeries_detected=n_forgeries,
             last_scan_ok=ok,
             scan_duration_ms=elapsed_ms,
         )
+        self._last_scan_metrics = metrics
+        return metrics
 
     def run(self, interval_seconds: float = 30.0) -> None:
         """Run continuous scanning loop (blocking)."""

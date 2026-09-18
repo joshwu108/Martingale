@@ -98,6 +98,87 @@ class TestJaxUtils:
         assert isinstance(loss, float)
 
 
+class TestMartingaleVeRLCallback:
+    """Tests for the veRL MartingaleVeRLCallback integration."""
+
+    def test_callback_importable(self):
+        from martingale.integrations.verl import MartingaleVeRLCallback
+        assert MartingaleVeRLCallback is not None
+
+    def test_on_update_actor_publishes_revision(self, tmp_path):
+        from martingale.integrations.verl import MartingaleVeRLCallback
+        from martingale.store.sqlite import SQLiteRevisionStore
+        from martingale.prod.revision_publisher import RevisionPublisher
+
+        store = SQLiteRevisionStore(tmp_path / "rev.db")
+        publisher = RevisionPublisher(store)
+        callback = MartingaleVeRLCallback(publisher=publisher)
+
+        model = nn.Linear(4, 2)
+        digest = callback.on_update_actor(model, global_step=1)
+        assert digest is not None
+        assert publisher.latest_digest == digest
+        assert digest in store
+
+    def test_on_rollout_start_returns_current_revision(self, tmp_path):
+        from martingale.integrations.verl import MartingaleVeRLCallback
+        from martingale.store.sqlite import SQLiteRevisionStore
+        from martingale.prod.revision_publisher import RevisionPublisher
+
+        store = SQLiteRevisionStore(tmp_path / "rev.db")
+        publisher = RevisionPublisher(store)
+        callback = MartingaleVeRLCallback(publisher=publisher)
+
+        model = nn.Linear(4, 2)
+        # First publish a revision via on_update_actor
+        callback.on_update_actor(model, global_step=0)
+        digest = callback.on_rollout_start(model)
+        assert digest == publisher.latest_digest
+
+    def test_revision_changes_between_updates(self, tmp_path):
+        from martingale.integrations.verl import MartingaleVeRLCallback
+        from martingale.store.sqlite import SQLiteRevisionStore
+        from martingale.prod.revision_publisher import RevisionPublisher
+
+        store = SQLiteRevisionStore(tmp_path / "rev.db")
+        publisher = RevisionPublisher(store)
+        callback = MartingaleVeRLCallback(publisher=publisher)
+        model = nn.Linear(4, 2)
+
+        d1 = callback.on_update_actor(model, global_step=0)
+
+        # Change model weights
+        optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+        model(torch.randn(2, 4)).sum().backward()
+        optimizer.step()
+
+        d2 = callback.on_update_actor(model, global_step=1)
+        assert d1 != d2
+
+    def test_global_step_tracked(self, tmp_path):
+        from martingale.integrations.verl import MartingaleVeRLCallback
+        from martingale.store.sqlite import SQLiteRevisionStore
+        from martingale.prod.revision_publisher import RevisionPublisher
+
+        store = SQLiteRevisionStore(tmp_path / "rev.db")
+        publisher = RevisionPublisher(store)
+        callback = MartingaleVeRLCallback(publisher=publisher)
+        model = nn.Linear(4, 2)
+
+        callback.on_update_actor(model, global_step=42)
+        assert callback.global_step == 42
+
+    def test_no_revision_before_first_update(self, tmp_path):
+        from martingale.integrations.verl import MartingaleVeRLCallback
+        from martingale.store.sqlite import SQLiteRevisionStore
+        from martingale.prod.revision_publisher import RevisionPublisher
+
+        store = SQLiteRevisionStore(tmp_path / "rev.db")
+        publisher = RevisionPublisher(store)
+        callback = MartingaleVeRLCallback(publisher=publisher)
+        assert callback.current_revision is None
+
+
 class TestMartingaleTRLTrainer:
     """Tests for HuggingFace TRL MartingalePPOTrainer integration."""
 

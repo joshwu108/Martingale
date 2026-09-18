@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Martingale Observatory</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1d27;
+      --border: #2a2d3a;
+      --text: #e2e8f0;
+      --muted: #64748b;
+      --green: #22c55e;
+      --yellow: #f59e0b;
+      --red: #ef4444;
+      --blue: #3b82f6;
+      --purple: #a78bfa;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 13px;
+      min-height: 100vh;
+    }
+
+    header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 12px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+
+    .logo {
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      color: var(--text);
+    }
+    .logo span { color: var(--purple); }
+
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 3px 9px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+    }
+    .badge-ok   { background: rgba(34,197,94,0.15);  color: var(--green); border: 1px solid rgba(34,197,94,0.3); }
+    .badge-warn { background: rgba(245,158,11,0.15); color: var(--yellow); border: 1px solid rgba(245,158,11,0.3); }
+    .badge-err  { background: rgba(239,68,68,0.15);  color: var(--red);   border: 1px solid rgba(239,68,68,0.3); }
+    .badge-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+
+    main { padding: 24px; max-width: 1400px; margin: 0 auto; }
+
+    .summary-cards {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px 20px;
+    }
+
+    .card-label {
+      font-size: 11px;
+      color: var(--muted);
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      margin-bottom: 6px;
+    }
+
+    .card-value {
+      font-size: 28px;
+      font-weight: 700;
+      color: var(--text);
+      line-height: 1;
+    }
+    .card-value.green { color: var(--green); }
+    .card-value.red   { color: var(--red); }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+
+    .grid-3 {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+
+    .panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 20px;
+    }
+
+    .panel-title {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--muted);
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      margin-bottom: 16px;
+    }
+
+    canvas { max-height: 220px; }
+
+    .full-width { grid-column: 1 / -1; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+
+    th {
+      text-align: left;
+      padding: 6px 12px;
+      color: var(--muted);
+      font-size: 11px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      border-bottom: 1px solid var(--border);
+    }
+
+    td {
+      padding: 8px 12px;
+      border-bottom: 1px solid rgba(42,45,58,0.5);
+      color: var(--text);
+    }
+
+    tr:last-child td { border-bottom: none; }
+
+    .lag-ok   { color: var(--green); }
+    .lag-warn { color: var(--yellow); }
+    .lag-err  { color: var(--red); }
+
+    .empty-state {
+      color: var(--muted);
+      font-size: 12px;
+      padding: 24px 0;
+      text-align: center;
+    }
+
+    #refresh-ts { font-variant-numeric: tabular-nums; }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo">martingale <span>observatory</span></div>
+  <div class="header-right">
+    <span>Last updated: <span id="refresh-ts">—</span></span>
+    <span id="forgery-badge" class="badge badge-ok">
+      <span class="badge-dot"></span> CLEAN
+    </span>
+  </div>
+</header>
+
+<main>
+  <!-- Summary cards -->
+  <div class="summary-cards">
+    <div class="card">
+      <div class="card-label">Revisions</div>
+      <div class="card-value" id="card-revisions">—</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Trajectories</div>
+      <div class="card-value" id="card-trajectories">—</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Verified Clean</div>
+      <div class="card-value green" id="card-verified">—</div>
+    </div>
+    <div class="card">
+      <div class="card-label">Boundary Flips</div>
+      <div class="card-value" id="card-flips">—</div>
+    </div>
+  </div>
+
+  <!-- Row 1: staleness histogram + IS weights -->
+  <div class="grid-2">
+    <div class="panel">
+      <div class="panel-title">Staleness Distribution</div>
+      <canvas id="staleness-chart"></canvas>
+    </div>
+    <div class="panel">
+      <div class="panel-title">IS Weight Distribution</div>
+      <canvas id="is-weights-chart"></canvas>
+    </div>
+  </div>
+
+  <!-- Row 2: revision timeline + staleness scaling -->
+  <div class="grid-2">
+    <div class="panel">
+      <div class="panel-title">Revision Timeline</div>
+      <canvas id="revision-timeline"></canvas>
+    </div>
+    <div class="panel">
+      <div class="panel-title">Staleness Scaling (T3 live)</div>
+      <canvas id="staleness-scaling-chart"></canvas>
+    </div>
+  </div>
+
+  <!-- Row 3: trajectories table (full width) -->
+  <div class="panel" style="margin-top: 16px">
+    <div class="panel-title">Recent Trajectories</div>
+    <table>
+      <thead>
+        <tr>
+          <th>Actor</th>
+          <th>Episode</th>
+          <th>Steps</th>
+          <th>Lag</th>
+          <th>Revision (behavior)</th>
+        </tr>
+      </thead>
+      <tbody id="trajectories-table">
+        <tr><td colspan="5" class="empty-state">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</main>
+
+<script>
+const BASE = '';
+
+// Chart instances (recreate on refresh)
+let stalenessChart = null;
+let isWeightsChart = null;
+let revTimelineChart = null;
+let scalingChart = null;
+
+const CHART_OPTS = {
+  responsive: true,
+  maintainAspectRatio: true,
+  plugins: { legend: { display: false } },
+  scales: {
+    x: {
+      grid: { color: 'rgba(42,45,58,0.8)' },
+      ticks: { color: '#64748b', font: { size: 10 } },
+    },
+    y: {
+      grid: { color: 'rgba(42,45,58,0.8)' },
+      ticks: { color: '#64748b', font: { size: 10 } },
+    },
+  },
+};
+
+function lagColor(lag) {
+  if (lag === 0)  return 'rgba(34,197,94,0.8)';
+  if (lag <= 2)   return 'rgba(59,130,246,0.8)';
+  if (lag <= 8)   return 'rgba(245,158,11,0.8)';
+  return 'rgba(239,68,68,0.8)';
+}
+
+async function refreshAll() {
+  try {
+    const [status, revisions, histogram, isStats, forgeries, scaling, trajectories] = await Promise.all([
+      fetch(`${BASE}/api/status`).then(r => r.json()),
+      fetch(`${BASE}/api/revisions`).then(r => r.json()),
+      fetch(`${BASE}/api/staleness/histogram`).then(r => r.json()),
+      fetch(`${BASE}/api/is-weights/stats`).then(r => r.json()),
+      fetch(`${BASE}/api/forgeries`).then(r => r.json()),
+      fetch(`${BASE}/api/staleness/scaling`).then(r => r.json()),
+      fetch(`${BASE}/api/trajectories?limit=50`).then(r => r.json()),
+    ]);
+
+    // Summary cards
+    document.getElementById('card-revisions').textContent    = status.revisions;
+    document.getElementById('card-trajectories').textContent = status.trajectories;
+    document.getElementById('card-verified').textContent     = forgeries.total_checked;
+    document.getElementById('card-flips').textContent        = '—';
+
+    // Forgery badge
+    const badge = document.getElementById('forgery-badge');
+    if (forgeries.forgeries > 0) {
+      badge.className = 'badge badge-err';
+      badge.innerHTML = `<span class="badge-dot"></span> ${forgeries.forgeries} FORGERIES`;
+    } else {
+      badge.className = 'badge badge-ok';
+      badge.innerHTML = '<span class="badge-dot"></span> CLEAN';
+    }
+
+    // Staleness histogram
+    const hBuckets = histogram.buckets;
+    const hLabels = hBuckets.map(b => `lag ${b.lag}`);
+    const hCounts = hBuckets.map(b => b.count);
+    const hColors = hBuckets.map(b => lagColor(b.lag));
+    if (stalenessChart) stalenessChart.destroy();
+    stalenessChart = new Chart(document.getElementById('staleness-chart'), {
+      type: 'bar',
+      data: {
+        labels: hLabels.length ? hLabels : ['no data'],
+        datasets: [{ data: hCounts.length ? hCounts : [0], backgroundColor: hColors, borderRadius: 3 }],
+      },
+      options: { ...CHART_OPTS, scales: { ...CHART_OPTS.scales, x: { ...CHART_OPTS.scales.x, title: { display: true, text: 'Revision lag', color: '#64748b', font: { size: 10 } } }, y: { ...CHART_OPTS.scales.y, title: { display: true, text: 'Trajectories', color: '#64748b', font: { size: 10 } } } } },
+    });
+
+    // IS weight distribution (bar chart: p50, p95, p99)
+    if (isWeightsChart) isWeightsChart.destroy();
+    isWeightsChart = new Chart(document.getElementById('is-weights-chart'), {
+      type: 'bar',
+      data: {
+        labels: ['mean', 'p50', 'p95', 'p99'],
+        datasets: [{
+          data: [isStats.mean, isStats.p50, isStats.p95, isStats.p99],
+          backgroundColor: ['rgba(59,130,246,0.7)', 'rgba(59,130,246,0.7)', 'rgba(245,158,11,0.7)', 'rgba(239,68,68,0.7)'],
+          borderRadius: 3,
+        }],
+      },
+      options: { ...CHART_OPTS, scales: { ...CHART_OPTS.scales, y: { ...CHART_OPTS.scales.y, title: { display: true, text: 'IS weight', color: '#64748b', font: { size: 10 } } } } },
+    });
+
+    // Revision timeline (cumulative trajectory count per revision)
+    const revDigests = revisions.map(r => r.digest.slice(0, 8));
+    // Compute cumulative trajectory count at each revision seq
+    // We don't have this per-revision breakdown in the API yet, so show revision count over time
+    if (revTimelineChart) revTimelineChart.destroy();
+    revTimelineChart = new Chart(document.getElementById('revision-timeline'), {
+      type: 'line',
+      data: {
+        labels: revDigests.length ? revDigests : ['—'],
+        datasets: [{
+          data: revDigests.map((_, i) => i + 1),
+          borderColor: 'rgba(167,139,250,0.9)',
+          backgroundColor: 'rgba(167,139,250,0.15)',
+          fill: true,
+          tension: 0.3,
+          pointRadius: 3,
+          pointBackgroundColor: 'rgba(167,139,250,1)',
+        }],
+      },
+      options: { ...CHART_OPTS, scales: { ...CHART_OPTS.scales, x: { ...CHART_OPTS.scales.x, ticks: { ...CHART_OPTS.scales.x.ticks, maxRotation: 45 } }, y: { ...CHART_OPTS.scales.y, title: { display: true, text: 'Cumulative revisions', color: '#64748b', font: { size: 10 } } } } },
+    });
+
+    // Staleness scaling chart (lag → IS weight variance)
+    const sData = scaling.data;
+    if (scalingChart) scalingChart.destroy();
+    scalingChart = new Chart(document.getElementById('staleness-scaling-chart'), {
+      type: 'line',
+      data: {
+        labels: sData.length ? sData.map(d => `lag ${d.lag}`) : ['no data'],
+        datasets: [{
+          data: sData.length ? sData.map(d => d.is_weight_variance) : [0],
+          borderColor: 'rgba(34,197,94,0.9)',
+          backgroundColor: 'rgba(34,197,94,0.1)',
+          fill: true,
+          tension: 0.3,
+          pointRadius: 4,
+          pointBackgroundColor: 'rgba(34,197,94,1)',
+        }],
+      },
+      options: { ...CHART_OPTS, scales: { ...CHART_OPTS.scales, x: { ...CHART_OPTS.scales.x, title: { display: true, text: 'Revision lag', color: '#64748b', font: { size: 10 } } }, y: { ...CHART_OPTS.scales.y, title: { display: true, text: 'IS weight variance', color: '#64748b', font: { size: 10 } } } } },
+    });
+
+    // Trajectories table
+    const tbody = document.getElementById('trajectories-table');
+    if (trajectories.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No trajectories yet</td></tr>';
+    } else {
+      tbody.innerHTML = trajectories.map(t => {
+        const lagClass = t.lag === 0 ? 'lag-ok' : t.lag <= 4 ? 'lag-warn' : 'lag-err';
+        return `<tr>
+          <td>${t.actor_id}</td>
+          <td>${t.episode_id}</td>
+          <td>${t.n_steps}</td>
+          <td class="${lagClass}">${t.lag}</td>
+          <td>—</td>
+        </tr>`;
+      }).join('');
+    }
+
+    document.getElementById('refresh-ts').textContent = new Date().toLocaleTimeString();
+
+  } catch (err) {
+    console.error('Refresh failed:', err);
+  }
+}
+
+// Initial load + auto-refresh every 5 seconds
+refreshAll();
+setInterval(refreshAll, 5000);
+</script>
+</body>
+</html>

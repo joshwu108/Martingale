@@ -96,6 +96,13 @@ class SQLiteRevisionStore(AbstractRevisionStore):
         for (digest,) in self._con.execute("SELECT digest FROM revisions"):
             yield digest
 
+    def revisions_ordered(self) -> list[tuple[int, str, float]]:
+        """Return [(seq, digest, created_at)] ordered by creation time."""
+        rows = self._con.execute(
+            "SELECT digest, created_at FROM revisions ORDER BY created_at ASC"
+        ).fetchall()
+        return [(i, digest, created_at) for i, (digest, created_at) in enumerate(rows)]
+
     def export_for_checker(self, store_dir: Path) -> None:
         """Export all revisions to the file-based format expected by checker/verify.py."""
         store_dir.mkdir(parents=True, exist_ok=True)

@@ -65,6 +65,60 @@ def status(workspace: str):
 @cli.command()
 @click.option("--dir", "workspace", default=".", show_default=True,
               help="Workspace directory.")
+@click.option("--host", default="127.0.0.1", show_default=True,
+              help="Bind host for the HTTP server.")
+@click.option("--port", default=7373, show_default=True,
+              help="Bind port for the HTTP server.")
+@click.option("--halt-on-forgery/--no-halt-on-forgery", default=True, show_default=True,
+              help="Halt training if a forgery is detected.")
+@click.option("--scan-interval", default=30.0, show_default=True,
+              help="Checker daemon scan interval in seconds (0 = run once and stop).")
+@click.option("--seed", "daemon_seed", default="martingale", show_default=True,
+              help="Draw seed for checker daemon (UTF-8 encoded).")
+def serve(workspace: str, host: str, port: int, halt_on_forgery: bool,
+          scan_interval: float, daemon_seed: str):
+    """Start the Martingale Observatory dashboard server."""
+    import threading
+    import uvicorn
+    ws = Path(workspace)
+    rev_db = ws / "revisions.db"
+
+    if not rev_db.exists():
+        click.echo(f"No revision store found at {rev_db}. Run: martingale init --dir {ws}", err=True)
+        raise SystemExit(1)
+
+    from martingale.store.sqlite import SQLiteRevisionStore, SQLiteLedger
+    from martingale.checker_daemon import CheckerDaemon, CheckerConfig
+    from martingale.server import create_app
+
+    store = SQLiteRevisionStore(rev_db)
+    ledger = SQLiteLedger(ws / "ledger.db", store)
+    seed_bytes = daemon_seed.encode("utf-8")
+    daemon = CheckerDaemon(ledger, store, CheckerConfig(
+        seed=seed_bytes, halt_on_forgery=halt_on_forgery
+    ))
+
+    # Run one immediate scan, then schedule background thread
+    daemon.scan_once()
+    if scan_interval > 0:
+        def _bg():
+            import time
+            while True:
+                time.sleep(scan_interval)
+                daemon.scan_once()
+        t = threading.Thread(target=_bg, daemon=True)
+        t.start()
+
+    app = create_app(store, ledger, daemon)
+    click.echo(f"Martingale Observatory → http://{host}:{port}")
+    click.echo(f"  workspace : {ws.resolve()}")
+    click.echo(f"  revisions : {rev_db}")
+    uvicorn.run(app, host=host, port=port)
+
+
+@cli.command()
+@click.option("--dir", "workspace", default=".", show_default=True,
+              help="Workspace directory.")
 @click.option("--seed", default="martingale", show_default=True,
               help="Draw seed (string, encoded as UTF-8).")
 def verify(workspace: str, seed: str):
