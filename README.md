@@ -2,21 +2,36 @@
 
 **Exact off-policy staleness accounting for asynchronous policy-gradient RL**
 
-> Status: **M7 complete** — all milestones implemented. See thesis status table below.
+> Status: **M7 complete** — all milestones implemented. Observatory server in development.
 
 ## What this is
 
-`martingale` is a correctness-oriented research codebase for the learner/algorithm
-side of asynchronous reinforcement learning.  Modern online-RL pipelines run actors
-and learners asynchronously: trajectories are generated under behavior-policy
-revisions that lag the learner's current policy, sometimes with *mixed* revisions
-inside a single trajectory when weights update mid-rollout.
+`martingale` is a correctness-oriented research codebase **and production toolchain**
+for the learner/algorithm side of asynchronous reinforcement learning. Modern online-RL
+pipelines (veRL, TRL, Lightning-RL) run actors and learners asynchronously: trajectories
+are generated under behavior-policy revisions that lag the learner's current policy,
+sometimes with *mixed* revisions inside a single trajectory when weights update mid-rollout.
 
-This is the missing scientific instrument: every action carries an **exact rational
-behavior probability** bound to an attested revision; importance weights are
-**exact**; and the **true expected gradient** is computed by **exhaustive trajectory
-enumeration in exact arithmetic**, so that staleness bias becomes a machine-checked
-rational identity or a machine-checked exact inequality — not a noisy empirical anecdote.
+This is the missing accountability layer:
+
+- Every action carries an **exact behavior probability** bound to a **hash-attested revision digest**.
+- IS weights are computed against the precise policy that generated each action — no approximation.
+- An **independent checker daemon** continuously audits the ledger and emits Prometheus metrics.
+- The **true expected gradient** is verifiable by exhaustive exact-arithmetic enumeration,
+  so that staleness bias becomes a machine-checked rational identity — not a noisy anecdote.
+
+### Research context
+
+The async RLHF staleness problem is actively studied. Recent papers attack it from the
+algorithm side:
+
+- **A-3PO** ([arxiv 2512.06547](https://arxiv.org/abs/2512.06547), ICLR 2026) — staleness-aware PPO for LLM training
+- **Staleness-LR Scaling Laws** ([arxiv 2607.01083](https://arxiv.org/abs/2607.01083), July 2026) — independently derives monotone bias growth (T3)
+- **RAC / V-trace for RLHF** ([arxiv 2606.27580](https://arxiv.org/abs/2606.27580), June 2026) — closed-form delay correction
+- **Missing Old Logits** ([arxiv 2605.12070](https://arxiv.org/abs/2605.12070), 2025) — IS accuracy under missing behavior log-probs (T4)
+
+Martingale is the **infrastructure complement**: where those papers estimate staleness bias,
+Martingale provides tamper-evident proof of exactly which policy generated each action.
 
 ## Thesis status
 
@@ -53,10 +68,16 @@ See `docs/nonclaims.md`. Key:
 # Install uv (https://docs.astral.sh/uv/)
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Install project
+# Install core (no dependencies)
 uv sync
 
-# Run all checks (import isolation + 98 tests)
+# Install with production extras (PyTorch, Prometheus, CLI)
+uv sync --extra prod
+
+# Install with observatory server (adds FastAPI + uvicorn)
+uv sync --extra server
+
+# Run all checks (import isolation + tests)
 make check
 
 # Run the T2 identity campaign (40 machine-checked exact equalities)
@@ -70,6 +91,47 @@ uv run python -m campaigns.mutation
 
 # Run the T5 interleaving + SIGKILL campaign
 uv run python -m campaigns.interleave
+```
+
+## Observatory dashboard (coming)
+
+```bash
+# Initialise a workspace
+martingale init --dir ./run_workspace
+
+# Start the dashboard server (port 7373 by default)
+martingale serve --dir ./run_workspace --port 7373
+# → http://127.0.0.1:7373
+```
+
+The dashboard shows:
+- Revision timeline and per-actor staleness histogram
+- IS weight distribution (mean, p95, p99) and clip-boundary flip count
+- Checker daemon status (forgeries detected / trajectories verified)
+- Live staleness scaling chart (T3 monotone-bias indicator)
+
+## Framework integrations
+
+```python
+# TRL (HuggingFace)
+from martingale.integrations.trl import MartingalePPOTrainer
+trainer = MartingalePPOTrainer(publisher=publisher, **trl_kwargs)
+
+# PyTorch Lightning
+from martingale.integrations.lightning import MartingaleCallback
+pl_trainer = Trainer(callbacks=[MartingaleCallback(publisher)])
+
+# Production actor (any framework)
+with actor.pin_revision(checkpoint_digest) as ctx:
+    result = actor.sample_and_record(obs, log_probs, episode_id, step)
+    ctx.commit_episode(episode_id)
+```
+
+## Verify a training run
+
+```bash
+martingale verify --dir ./run_workspace --seed my-training-seed
+# → All 1247 trajectories verified clean.
 ```
 
 ## Repository layout
