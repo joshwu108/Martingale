@@ -24,12 +24,10 @@ import os
 from dataclasses import dataclass, field
 from fractions import Fraction
 from pathlib import Path
-from typing import Optional
 
 from martingale.draw import DrawResult
-from martingale.rational import fraction_to_str, to_fraction
-from martingale.revision import RevisionStore, _fsync_file, _fsync_dir
-
+from martingale.rational import fraction_to_str
+from martingale.revision import RevisionStore, _fsync_dir, _fsync_file
 
 GENESIS_DIGEST = "0" * 64  # sentinel prev_digest for the first record
 

@@ -21,8 +21,6 @@ Usage in a veRL TrainLoop:
 """
 from __future__ import annotations
 
-from typing import Optional
-
 from martingale.prod.revision_publisher import RevisionPublisher
 
 
@@ -41,11 +39,11 @@ class MartingaleVeRLCallback:
 
     def __init__(self, publisher: RevisionPublisher) -> None:
         self.publisher = publisher
-        self._current_revision: Optional[str] = None
+        self._current_revision: str | None = None
         self._global_step: int = 0
 
     @property
-    def current_revision(self) -> Optional[str]:
+    def current_revision(self) -> str | None:
         """The digest of the most recently published revision, or None."""
         return self._current_revision
 
@@ -68,7 +66,7 @@ class MartingaleVeRLCallback:
             The new revision digest (hex string).
         """
         self._global_step = global_step
-        rev = self.publisher.publish(model)
+        rev = self.publisher.publish(model, step=global_step)
         self._current_revision = rev.digest
         return rev.digest
 

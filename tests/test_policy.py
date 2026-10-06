@@ -1,10 +1,12 @@
 """Tests for policy.py — rational simplex parameterization and exact gradients."""
-import pytest
 from fractions import Fraction
+
+import pytest
+
 from martingale.policy import (
     RationalPolicy,
-    log_prob_gradient,
     gradient_ascent_step,
+    log_prob_gradient,
 )
 
 

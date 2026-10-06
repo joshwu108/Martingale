@@ -17,8 +17,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from martingale.pipeline import PipelineConfig, run_pipeline
 from checker.verify import verify_ledger
+from martingale.pipeline import PipelineConfig, run_pipeline
 
 RESULTS_DIR = Path(__file__).parent.parent / "results"
 SEED = b"interleave-campaign-seed-v1"
@@ -138,7 +138,7 @@ def main() -> None:
         json.dump(report, f, indent=2)
     print(f"\nReport written to {out}")
 
-    print(f"\n=== Summary ===")
+    print("\n=== Summary ===")
     print(f"Scenarios: {report['n_scenarios']}")
     print(f"OK: {report['n_ok']}")
     print(f"FAIL: {report['n_fail']}")

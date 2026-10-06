@@ -1,12 +1,14 @@
 """Tests for prod/weights.py — float32/float64 IS weight computation."""
+from fractions import Fraction
+
 import pytest
 import torch
-from fractions import Fraction
+
 from martingale.prod.weights import (
-    compute_is_weights,
-    clip_is_weights,
-    compute_is_weights_exact_shadow,
     IsWeightResult,
+    clip_is_weights,
+    compute_is_weights,
+    compute_is_weights_exact_shadow,
 )
 
 
@@ -101,8 +103,9 @@ class TestExactShadow:
     def test_shadow_detects_flip(self):
         """Shadow check detects when float clips but exact does not (or vice versa)."""
         # Construct a case near the boundary
+        import math
+        import struct
         from fractions import Fraction
-        import struct, math
         clip_eps = 0.1
         boundary = 1.0 + clip_eps
         # Exact ratio slightly below boundary

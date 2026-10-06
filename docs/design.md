@@ -337,10 +337,12 @@ See `docs/nonclaims.md` for the full list.  Key non-claims:
 
 ---
 
-## 7. Token-level attested record for LLM RL (Phase 1 — AWAITING SIGN-OFF)
+## 7. Token-level attested record for LLM RL (IMPLEMENTED 2026-10-06)
 
-Written 2026-10-05 per `planning/2026-10-05-phase1-researcher-tool.md`. This
-section replaces the prototype in `prod/` (see `docs/nonclaims.md`,
+Written 2026-10-05, implemented 2026-10-06 in `src/martingale/record/`,
+`checker/verify_tokens.py`, `campaigns/mutation_tokens.py`. The owner approved
+the plan and told the author to proceed on the recommendations in 7.9 (D1–D7).
+This section replaces the prototype in `prod/` (see `docs/nonclaims.md`,
 "Production layer"). Nothing in sections 1–6 changes: the exact core keeps
 `Revision`/`ActionRecord` for rational-table policies. The new types live
 beside them and share the same chain, digest and durability discipline.
@@ -478,3 +480,29 @@ expanded form). Decide (3) only if a real run needs it.
 | D5 | Rewards: per-sequence scalar bits only, per-token optional later | yes |
 | D6 | Run-length encoding of revision digest within a sequence (7.8-1) in Phase 1, or later | Phase 1, it is cheap |
 | D7 | Tier 2 recompute shipped in Phase 1 or deferred to Phase 3 (needs a real engine) | defer to Phase 3 |
+
+### 7.10 As implemented (deviations from 7.1–7.9)
+
+| Item | Design | Implemented | Why |
+|---|---|---|---|
+| Sampler consistency within a sequence (7.6) | equal "unless the manifest chain links them" | **strictly equal**: any tokenizer or sampler change between two tokens of one sequence is a forgery | simpler, stricter, and a mid-sequence sampler change is never legitimate |
+| Sequence digest (7.5) | over all fields except `engine_request_id` | over header fields plus the **list of token digests** (each token digest already binds its content and chain); `engine_request_id` outside | equivalent binding, cheaper to recompute |
+| First token's `prev_digest` | unspecified | the sequence's `prev_sequence_digest` (GENESIS for an actor's first sequence) | binds sequence order into the token chain, as the exact ledger does |
+| `sequence_index` | not in 7.5 | per-actor 0-based counter inside the digest | the checker needs an order to walk a chain from files |
+| Trainer-side log-probs | not in 7.x | **`ScoreRecord`**: (sequence digest, position, train revision, log-prob bits), chained per sequence from the sequence digest | without it lag and the staleness-vs-mismatch split (Phase 2) are not computable from the record |
+| Anchor | per-actor heads | one **ledger head** = digest of {per-actor sequence heads, per-sequence score heads, sorted revision set} (`TokenLedger.head()`), recomputed by the checker and compared to `expected_head` | per-actor heads missed re-signed score chains and dropped unreferenced revisions (found by the mutation campaign) |
+| D6 run-length encoding | Phase 1 | **deferred**: storage is one row per token; the canonical form is the expanded one so RLE stays a storage-only change | no real run has needed it yet |
+| D7 recompute tier | deferred to Phase 3 | still deferred; `MartingaleRecorder` records which log-prob source fed the record (`logprobs_mode` ∈ engine_sampling / trainer_old_logps / trainer_recompute) so tier 2 has what it needs | needs a real engine |
+| Storage | `revisions.db` + `ledger.db` gain tables | separate **`tokens.db`** (`llm_revisions`, `sequences`, `tokens` inline in the sequence row, `scores`) with `synchronous=FULL` and `fullfsync=ON` | keeps the exact ledger schema untouched |
+
+| Unbound keys (review 2026-10-06) | not addressed | every object type has an allow-list; any extra key is a forgery, because a downstream reader would otherwise be fed data the digest never covered | found by review, not by the first campaign |
+| Integer fields | "int" | `type(x) is int` and `>= 0` on both producer and checker (JSON `true == 1` would otherwise pass) | review finding |
+| Malformed files | — | a verdict per file (`errors[name] = ["malformed: ..."]`), never an exception out of `verify_export`; files ordered by parsed (actor, index) | review finding |
+| Checker CLI | — | requires `--expected-head HEAD` or an explicit `--unanchored`; the report carries `anchored` | an unanchored verdict is a weaker claim and must say so |
+| Store transactions | "one transaction per sequence" | every mutation is BEGIN IMMEDIATE ... COMMIT with ROLLBACK on failure, under a process lock, check-then-insert included; `head()` and export read one snapshot; export writes to a temp dir, fsyncs, renames | review found no rollback and a check-then-insert race |
+
+Evidence: `results/mutation_tokens_report.json` (90/90 single-fault forgeries
+rejected with the anchored head; 82/90 without, the survivors being the
+re-signed, trailing-deletion and unreferenced-revision classes the anchor
+exists for), and `tests/test_prod_checker.py` (the production actor's record
+passes the independent checker).

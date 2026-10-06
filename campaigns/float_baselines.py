@@ -16,7 +16,6 @@ import struct
 from fractions import Fraction
 from typing import Literal
 
-
 FloatVariant = Literal["float32", "float64"]
 
 

@@ -22,18 +22,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from martingale.draw import draw_action
+from checker.verify import verify_ledger
 from martingale.estimators import (
     is_reinforce_gradient,
     on_policy_gradient,
 )
-from martingale.ledger import ActionRecord, Ledger, GENESIS_DIGEST
 from martingale.mdp import MDP, enumerate_trajectories
 from martingale.pipeline import PipelineConfig, run_pipeline
 from martingale.policy import RationalPolicy
 from martingale.rational import fraction_to_str
-from martingale.revision import RevisionStore
-from checker.verify import verify_ledger
 
 RESULTS_DIR = Path(__file__).parent.parent / "results"
 SEED = b"e2e-demo-seed-v1"
@@ -199,7 +196,7 @@ def main() -> None:
         json.dump(report, f, indent=2)
     print(f"\nReport written to {out}")
 
-    print(f"\n=== Summary ===")
+    print("\n=== Summary ===")
     print(f"Pipeline: {report['pipeline']['n_verified']}/{report['pipeline']['n_trajectories']} verified")
     print(f"SIGKILL+recovery: {report['sigkill']['n_verified']}/{report['sigkill']['n_trajectories']} verified")
     print(f"IS identity (T2): {report['is_identity']['identity_T2_holds']}")

@@ -4,17 +4,19 @@ Tests for estimators.py — exact expected gradients via trajectory enumeration.
 Key invariant (T2): E_{τ~b}[IS-REINFORCE gradient] = on-policy gradient
                     as an exact Fraction equality, component by component.
 """
-import pytest
 from fractions import Fraction
+
+import pytest
+
+from martingale.estimators import (
+    grpo_gradient,
+    is_reinforce_gradient,
+    on_policy_gradient,
+    per_trajectory_is_reinforce,
+    ppo_clipped_gradient,
+)
 from martingale.mdp import MDP, enumerate_trajectories
 from martingale.policy import RationalPolicy, gradient_ascent_step
-from martingale.estimators import (
-    on_policy_gradient,
-    is_reinforce_gradient,
-    ppo_clipped_gradient,
-    grpo_gradient,
-    per_trajectory_is_reinforce,
-)
 
 
 def _simple_2state_mdp() -> MDP:

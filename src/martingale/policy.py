@@ -20,7 +20,6 @@ from __future__ import annotations
 
 from fractions import Fraction
 from typing import Union
-import math
 
 from martingale.rational import check_simplex, to_fraction
 

@@ -1,66 +1,71 @@
-"""Tests for prod/revision_publisher.py — checkpoint hashing and publishing."""
+"""Tests for prod/revision_publisher.py — checkpoint digest and LLMRevision publishing."""
 import pytest
-import torch
-import torch.nn as nn
-from martingale.prod.revision_publisher import RevisionPublisher, checkpoint_digest
-from martingale.store.sqlite import SQLiteRevisionStore
+
+torch = pytest.importorskip("torch")
+nn = torch.nn
+
+from martingale.prod.revision_publisher import NO_TOKENIZER, RevisionPublisher, checkpoint_digest
+from martingale.record import Recorder, SamplerConfig
 
 
 class TestCheckpointDigest:
     def test_same_model_same_digest(self):
         model = nn.Linear(4, 2)
-        d1 = checkpoint_digest(model)
-        d2 = checkpoint_digest(model)
-        assert d1 == d2
+        assert checkpoint_digest(model) == checkpoint_digest(model)
 
     def test_different_weights_different_digest(self):
-        m1 = nn.Linear(4, 2)
-        m2 = nn.Linear(4, 2)
-        # Different random init → different digest (overwhelmingly likely)
-        assert checkpoint_digest(m1) != checkpoint_digest(m2)
+        assert checkpoint_digest(nn.Linear(4, 2)) != checkpoint_digest(nn.Linear(4, 2))
 
     def test_digest_is_hex_string(self):
         d = checkpoint_digest(nn.Linear(2, 2))
-        assert isinstance(d, str)
-        assert len(d) == 64
+        assert isinstance(d, str) and len(d) == 64
 
     def test_state_dict_input(self):
         model = nn.Linear(4, 2)
-        d1 = checkpoint_digest(model)
-        d2 = checkpoint_digest(model.state_dict())
-        assert d1 == d2
+        assert checkpoint_digest(model) == checkpoint_digest(model.state_dict())
+
+    def test_digest_does_not_depend_on_torch_save_framing(self):
+        """Raw-bytes digest equals the digest of an explicit (dtype, shape, bytes) triple."""
+        from martingale.record import weights_digest
+        model = nn.Linear(3, 1)
+        triples = {k: (str(v.dtype).removeprefix("torch."), tuple(v.shape), v.contiguous().view(-1).view(torch.uint8).numpy().tobytes())
+                   for k, v in model.state_dict().items()}
+        assert checkpoint_digest(model) == weights_digest(triples)
 
 
 class TestRevisionPublisher:
-    def test_publish_registers_revision(self, tmp_path):
-        store = SQLiteRevisionStore(tmp_path / "rev.db")
-        publisher = RevisionPublisher(store)
-        model = nn.Linear(4, 2)
-        rev = publisher.publish(model)
-        assert rev.digest in store
+    @pytest.fixture
+    def pub(self, tmp_path):
+        return RevisionPublisher(Recorder(tmp_path / "ws"), tokenizer=NO_TOKENIZER,
+                                 sampler=SamplerConfig(temperature=1.0))
 
-    def test_publish_idempotent(self, tmp_path):
-        store = SQLiteRevisionStore(tmp_path / "rev.db")
-        publisher = RevisionPublisher(store)
+    def test_publish_registers_revision(self, pub):
         model = nn.Linear(4, 2)
-        r1 = publisher.publish(model)
-        r2 = publisher.publish(model)
-        assert r1.digest == r2.digest
+        rev = pub.publish(model)
+        assert pub.recorder.ledger.has_revision(rev.digest)
+        assert rev.weights_digest == checkpoint_digest(model)
 
-    def test_revision_uniquely_identifies_checkpoint(self, tmp_path):
-        """Two different models produce different revisions."""
-        store = SQLiteRevisionStore(tmp_path / "rev.db")
-        publisher = RevisionPublisher(store)
-        m1, m2 = nn.Linear(4, 2), nn.Linear(4, 2)
-        r1 = publisher.publish(m1)
-        r2 = publisher.publish(m2)
-        # Different model weights → different revision digest
+    def test_publish_idempotent_per_checkpoint(self, pub):
+        model = nn.Linear(4, 2)
+        assert pub.publish(model).digest == pub.publish(model).digest
+        assert sum(1 for _ in pub.recorder.ledger.all_revisions()) == 1
+
+    def test_different_models_different_revisions_with_parent_chain(self, pub):
+        r1 = pub.publish(nn.Linear(4, 2))
+        r2 = pub.publish(nn.Linear(4, 2))
         assert r1.digest != r2.digest
+        assert r2.parent_digest == r1.digest and r2.step == r1.step + 1
+        assert pub.latest_digest == r2.digest
 
-    def test_latest_digest(self, tmp_path):
-        store = SQLiteRevisionStore(tmp_path / "rev.db")
-        publisher = RevisionPublisher(store)
-        m1, m2 = nn.Linear(4, 2), nn.Linear(4, 2)
-        r1 = publisher.publish(m1)
-        r2 = publisher.publish(m2)
-        assert publisher.latest_digest == r2.digest
+    def test_explicit_step_is_bound_into_digest(self, pub):
+        model = nn.Linear(4, 2)
+        a = pub.publish(model, step=10)
+        b = pub.publish(model, step=11)
+        assert a.digest != b.digest and a.weights_digest == b.weights_digest
+
+    def test_sampler_and_tokenizer_are_bound(self, tmp_path):
+        model = nn.Linear(2, 2)
+        a = RevisionPublisher(Recorder(tmp_path / "a"), sampler=SamplerConfig(temperature=1.0)).publish(model)
+        b = RevisionPublisher(Recorder(tmp_path / "b"), sampler=SamplerConfig(temperature=0.7)).publish(model)
+        c = RevisionPublisher(Recorder(tmp_path / "c"), tokenizer=b"tokenizer.json bytes").publish(model)
+        assert len({a.digest, b.digest, c.digest}) == 3

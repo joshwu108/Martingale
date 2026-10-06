@@ -50,11 +50,14 @@ dev = [
     "pytest-cov>=5.0",
     "hypothesis>=6.0",
     "torch>=2.0",
+    "numpy>=1.26",
     "prometheus-client>=0.20",
     "click>=8.0",
     "fastapi>=0.111",
     "uvicorn[standard]>=0.30",
     "httpx>=0.27",
+    "ruff>=0.6",
+    "mypy>=1.10",
 ]
 
 [tool.pytest.ini_options]
@@ -71,3 +74,23 @@ explicit = true
 
 [tool.uv.sources]
 torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+extend-exclude = ["uv.lock", "spec"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501", "B008", "B905", "UP007", "UP035", "UP006"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["B011", "E731", "F401", "F811", "E702", "B007", "E402", "F841", "E741"]
+"campaigns/*" = ["E731", "B023", "E402", "B007", "E702", "E741"]
+"benchmarks/*" = ["E402"]
+
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+warn_unused_ignores = false
+files = ["src/martingale/record", "src/martingale/diagnostics", "src/martingale/exact", "checker"]

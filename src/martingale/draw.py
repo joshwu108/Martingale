@@ -14,7 +14,6 @@ import hashlib
 import struct
 from dataclasses import dataclass
 from fractions import Fraction
-from typing import Optional
 
 
 @dataclass(frozen=True)
@@ -119,6 +118,6 @@ def draw_action(
         counter += 1
         if counter > 1000:
             raise RuntimeError(
-                f"draw_action: exceeded 1000 rejections. "
-                f"This indicates a bug in the simplex or draw logic."
+                "draw_action: exceeded 1000 rejections. "
+                "This indicates a bug in the simplex or draw logic."
             )

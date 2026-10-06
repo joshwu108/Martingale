@@ -1,7 +1,7 @@
-.PHONY: check test lint check-imports install clean
+.PHONY: check test lint typecheck check-imports install clean
 
 # Run all checks: import isolation, then tests
-check: check-imports test
+check: check-imports lint typecheck test
 
 install:
 	uv sync --all-extras
@@ -17,8 +17,12 @@ test:
 	uv run pytest tests/ -v --tb=short
 
 lint:
-	@echo "=== Lint (pyflakes) ==="
-	uv run python -m pyflakes src/ checker/ campaigns/ tests/ || true
+	@echo "=== Lint (ruff) ==="
+	uv run ruff check src/ checker/ campaigns/ tests/ benchmarks/
+
+typecheck:
+	@echo "=== Type check (mypy: record, diagnostics, exact, checker) ==="
+	uv run mypy
 
 clean:
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true

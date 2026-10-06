@@ -1,8 +1,10 @@
 """Tests for cli.py — martingale CLI commands."""
 import json
+from fractions import Fraction
+
 import pytest
 from click.testing import CliRunner
-from fractions import Fraction
+
 from martingale.cli import cli
 
 
@@ -22,9 +24,9 @@ class TestCLI:
         assert "revisions" in result.output.lower()
 
     def test_status_shows_counts(self, tmp_path):
-        from martingale.store.sqlite import SQLiteRevisionStore, SQLiteLedger
         from martingale.draw import draw_action
-        from martingale.ledger import ActionRecord, GENESIS_DIGEST
+        from martingale.ledger import GENESIS_DIGEST, ActionRecord
+        from martingale.store.sqlite import SQLiteLedger, SQLiteRevisionStore
         # Populate store and ledger
         store = SQLiteRevisionStore(tmp_path / "revisions.db")
         ledger = SQLiteLedger(tmp_path / "ledger.db", store)
@@ -45,9 +47,9 @@ class TestCLI:
         assert "1" in result.output  # at least 1 revision and 1 trajectory
 
     def test_verify_clean_ledger(self, tmp_path):
-        from martingale.store.sqlite import SQLiteRevisionStore, SQLiteLedger
         from martingale.draw import draw_action
-        from martingale.ledger import ActionRecord, GENESIS_DIGEST
+        from martingale.ledger import GENESIS_DIGEST, ActionRecord
+        from martingale.store.sqlite import SQLiteLedger, SQLiteRevisionStore
         store = SQLiteRevisionStore(tmp_path / "revisions.db")
         ledger = SQLiteLedger(tmp_path / "ledger.db", store)
         probs = {0: Fraction(1, 2), 1: Fraction(1, 2)}
@@ -70,9 +72,10 @@ class TestCLI:
 
     def test_verify_exits_nonzero_on_forgery(self, tmp_path):
         import sqlite3
-        from martingale.store.sqlite import SQLiteRevisionStore, SQLiteLedger
+
         from martingale.draw import draw_action
-        from martingale.ledger import ActionRecord, GENESIS_DIGEST
+        from martingale.ledger import GENESIS_DIGEST, ActionRecord
+        from martingale.store.sqlite import SQLiteLedger, SQLiteRevisionStore
         store = SQLiteRevisionStore(tmp_path / "revisions.db")
         ledger = SQLiteLedger(tmp_path / "ledger.db", store)
         probs = {0: Fraction(1, 2), 1: Fraction(1, 2)}

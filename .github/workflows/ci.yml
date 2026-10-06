@@ -26,7 +26,24 @@ jobs:
         run: uv sync --locked
       - name: Checker import isolation
         run: uv run python scripts/check_imports.py
+      - name: Lint
+        run: uv run ruff check src/ checker/ campaigns/ tests/ benchmarks/
+      - name: Type check
+        run: uv run mypy
       - name: Core imports without torch
         run: uv run --no-group dev --isolated python -c "import martingale, martingale.prod.actor, martingale.prod.weights, martingale.prod.revision_publisher; print('ok')"
       - name: Tests
         run: uv run pytest tests/ -q
+
+  tla:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Fetch TLC
+        run: curl -sSL -o /tmp/tla2tools.jar https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar
+      - name: Model-check RevisionPin (invariant holds) and RevisionPinWeakened (counterexample)
+        run: TLC_JAR=/tmp/tla2tools.jar bash spec/check.sh

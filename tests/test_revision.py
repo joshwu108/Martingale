@@ -1,7 +1,9 @@
 """Tests for revision.py — content-addressed revision store."""
-import pytest
 from fractions import Fraction
-from martingale.revision import RevisionStore, Revision
+
+import pytest
+
+from martingale.revision import Revision, RevisionStore
 
 
 class TestRevision:

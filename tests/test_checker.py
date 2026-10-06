@@ -3,17 +3,16 @@ Tests for checker/verify.py — independent ledger verifier.
 Tests that valid ledgers pass, and various forgeries are rejected.
 """
 import json
-import pytest
 from fractions import Fraction
 from pathlib import Path
 
-from martingale.draw import DrawResult, draw_action
-from martingale.ledger import ActionRecord, Ledger, GENESIS_DIGEST
-from martingale.revision import RevisionStore
+import pytest
 
 # checker imports nothing from martingale — import it directly
-from checker.verify import verify_trajectory, verify_ledger, VerificationError
-
+from checker.verify import VerificationError, verify_ledger, verify_trajectory
+from martingale.draw import DrawResult, draw_action
+from martingale.ledger import GENESIS_DIGEST, ActionRecord, Ledger
+from martingale.revision import RevisionStore
 
 SEED = b"test_checker_seed_12345"
 
@@ -73,7 +72,7 @@ class TestForgeries:
         rec["action"] = 1 - original_action  # flip action
         # Must recompute digest too (or it fails digest check first)
         errors = verify_trajectory(traj_dict, store_dir, seed=SEED)
-        assert errors, f"Tampered action should be rejected"
+        assert errors, "Tampered action should be rejected"
 
     def test_tampered_behavior_prob_rejected(self, tmp_path):
         """Changing behavior_prob fails probability re-derivation."""

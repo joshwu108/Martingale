@@ -1,114 +1,89 @@
-"""Tests for prod/actor.py — AsyncActor with pin_revision context manager."""
+"""Tests for prod/actor.py — AsyncActor over the token record."""
 import pytest
-import torch
-import torch.nn as nn
-from fractions import Fraction
+
+torch = pytest.importorskip("torch")
+nn = torch.nn
+
 from martingale.prod.actor import AsyncActor, PinnedContext, ProtocolViolation
 from martingale.prod.revision_publisher import RevisionPublisher
-from martingale.store.sqlite import SQLiteRevisionStore, SQLiteLedger
+from martingale.record import Recorder, bits_to_fraction
 
 
-def _make_policy():
-    """Simple 1-layer softmax policy."""
-    model = nn.Linear(4, 2)
-    return model
+@pytest.fixture
+def setup(tmp_path):
+    rec = Recorder(tmp_path / "ws")
+    pub = RevisionPublisher(rec)
+    return rec, pub, AsyncActor(actor_id=0, recorder=rec)
 
 
 class TestPinnedContext:
-    def test_context_manager_provides_revision_digest(self, tmp_path):
-        store = SQLiteRevisionStore(tmp_path / "rev.db")
-        publisher = RevisionPublisher(store)
-        model = _make_policy()
-        rev = publisher.publish(model)
-        ledger = SQLiteLedger(tmp_path / "ledger.db", store)
-        actor = AsyncActor(actor_id=0, ledger=ledger, seed=b"test")
-
+    def test_context_manager_provides_revision_digest(self, setup):
+        rec, pub, actor = setup
+        rev = pub.publish(nn.Linear(4, 2))
         with actor.pin_revision(rev.digest) as ctx:
-            assert isinstance(ctx, PinnedContext)
-            assert ctx.revision_digest == rev.digest
+            assert isinstance(ctx, PinnedContext) and ctx.revision_digest == rev.digest
 
-    def test_cannot_draw_outside_context(self, tmp_path):
-        store = SQLiteRevisionStore(tmp_path / "rev.db")
-        ledger = SQLiteLedger(tmp_path / "ledger.db", store)
-        actor = AsyncActor(actor_id=0, ledger=ledger, seed=b"test")
-        obs = torch.zeros(4)
-        with pytest.raises(ProtocolViolation, match="pin"):
-            actor.sample_and_record(obs, log_probs=torch.tensor([-0.5, -0.5]))
+    def test_cannot_draw_outside_context(self, setup):
+        _, _, actor = setup
+        with pytest.raises(ProtocolViolation):
+            actor.sample_and_record(torch.zeros(2), episode_id=0, step=0)
 
-    def test_record_uses_pinned_revision(self, tmp_path):
-        store = SQLiteRevisionStore(tmp_path / "rev.db")
-        publisher = RevisionPublisher(store)
-        model = _make_policy()
-        rev = publisher.publish(model)
-        ledger = SQLiteLedger(tmp_path / "ledger.db", store)
-        actor = AsyncActor(actor_id=0, ledger=ledger, seed=b"test")
+    def test_cannot_pin_unpublished_revision(self, setup):
+        _, _, actor = setup
+        with pytest.raises(ProtocolViolation):
+            actor.pin_revision("9" * 64)
 
-        log_probs = torch.tensor([-0.5, -0.8])
+    def test_record_uses_pinned_revision_and_exact_logprob_bits(self, setup):
+        rec, pub, actor = setup
+        rev = pub.publish(nn.Linear(4, 2))
+        logits = torch.tensor([0.3, -1.2])
         with actor.pin_revision(rev.digest) as ctx:
-            result = actor.sample_and_record(
-                obs=torch.zeros(4),
-                log_probs=log_probs,
-                episode_id=0,
-                step=0,
-            )
-        assert result["revision_digest"] == rev.digest
-        assert result["action"] in [0, 1]
+            out = actor.sample_and_record(logits, episode_id=0, step=0)
+            ctx.commit_episode(0)
+        assert out["revision_digest"] == rev.digest and out["action"] in (0, 1)
+        seq = next(rec.ledger.all_sequences())
+        tok = seq.tokens[0]
+        assert tok.token_id == out["action"]
+        want = float(torch.log_softmax(logits, -1)[out["action"]].to(torch.float32))
+        assert float(bits_to_fraction(tok.logprob_bits)) == pytest.approx(want, abs=0.0)  # bits, not rounding
 
-    def test_pin_released_after_context(self, tmp_path):
-        """After the context exits, sampling raises ProtocolViolation again."""
-        store = SQLiteRevisionStore(tmp_path / "rev.db")
-        publisher = RevisionPublisher(store)
-        rev = publisher.publish(_make_policy())
-        ledger = SQLiteLedger(tmp_path / "ledger.db", store)
-        actor = AsyncActor(actor_id=0, ledger=ledger, seed=b"test")
-
+    def test_pin_released_after_context(self, setup):
+        _, pub, actor = setup
+        rev = pub.publish(nn.Linear(4, 2))
         with actor.pin_revision(rev.digest):
-            pass  # context exits here
+            pass
+        with pytest.raises(ProtocolViolation):
+            actor.sample_and_record(torch.zeros(2))
 
-        with pytest.raises(ProtocolViolation, match="pin"):
-            actor.sample_and_record(torch.zeros(4), torch.tensor([-0.5, -0.5]))
-
-    def test_episode_ledger_written(self, tmp_path):
-        """After a full episode, trajectory is written to the ledger."""
-        store = SQLiteRevisionStore(tmp_path / "rev.db")
-        publisher = RevisionPublisher(store)
-        rev = publisher.publish(_make_policy())
-        ledger = SQLiteLedger(tmp_path / "ledger.db", store)
-        actor = AsyncActor(actor_id=0, ledger=ledger, seed=b"test")
-
+    def test_episode_written_with_reward(self, setup):
+        rec, pub, actor = setup
+        rev = pub.publish(nn.Linear(4, 2))
         with actor.pin_revision(rev.digest) as ctx:
             for step in range(3):
-                actor.sample_and_record(
-                    obs=torch.zeros(4),
-                    log_probs=torch.tensor([-0.5, -0.8]),
-                    episode_id=0,
-                    step=step,
-                )
-            ctx.commit_episode(episode_id=0)
+                actor.sample_and_record(torch.randn(2), episode_id=0, step=step)
+            ctx.commit_episode(0, reward=2.5)
+        seq = next(rec.ledger.all_sequences())
+        assert len(seq.tokens) == 3 and all(t.revision_digest == rev.digest for t in seq.tokens)
+        assert bits_to_fraction(seq.reward_bits) == 2.5
 
-        traj = ledger.load_trajectory(actor_id=0, episode_id=0)
-        assert len(traj.action_records) == 3
-        for rec in traj.action_records:
-            assert rec.revision_digest == rev.digest
-
-    def test_mixed_revision_episode(self, tmp_path):
-        """Mid-episode revision switch is first-class: each step pins its own revision."""
-        store = SQLiteRevisionStore(tmp_path / "rev.db")
-        publisher = RevisionPublisher(store)
-        rev1 = publisher.publish(_make_policy())
-        rev2 = publisher.publish(_make_policy())
-        ledger = SQLiteLedger(tmp_path / "ledger.db", store)
-        actor = AsyncActor(actor_id=0, ledger=ledger, seed=b"test")
-
-        with actor.pin_revision(rev1.digest) as ctx:
-            actor.sample_and_record(torch.zeros(4), torch.tensor([-0.5, -0.5]),
-                                    episode_id=0, step=0)
-
+    def test_mixed_revision_episode(self, setup):
+        rec, pub, actor = setup
+        rev1 = pub.publish(nn.Linear(4, 2))
+        rev2 = pub.publish(nn.Linear(4, 2))
+        with actor.pin_revision(rev1.digest):
+            actor.sample_and_record(torch.randn(2), episode_id=0, step=0)
         with actor.pin_revision(rev2.digest) as ctx:
-            actor.sample_and_record(torch.zeros(4), torch.tensor([-0.5, -0.5]),
-                                    episode_id=0, step=1)
-            ctx.commit_episode(episode_id=0)
+            actor.sample_and_record(torch.randn(2), episode_id=0, step=1)
+            ctx.commit_episode(0)
+        seq = next(rec.ledger.all_sequences())
+        assert seq.is_mixed_revision and seq.revision_digests == (rev1.digest, rev2.digest)
 
-        traj = ledger.load_trajectory(actor_id=0, episode_id=0)
-        assert traj.action_records[0].revision_digest == rev1.digest
-        assert traj.action_records[1].revision_digest == rev2.digest
+    def test_commit_without_steps_and_abort(self, setup):
+        rec, pub, actor = setup
+        rev = pub.publish(nn.Linear(4, 2))
+        with actor.pin_revision(rev.digest) as ctx:
+            with pytest.raises(ProtocolViolation):
+                ctx.commit_episode(7)
+            actor.sample_and_record(torch.randn(2), episode_id=1)
+            actor.abort_episode(1)
+        assert rec.ledger.count_sequences() == 0

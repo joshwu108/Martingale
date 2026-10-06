@@ -19,9 +19,8 @@ from __future__ import annotations
 import sys
 import tempfile
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 from prometheus_client import Counter, Gauge, Histogram
 
@@ -80,7 +79,7 @@ class CheckerDaemon:
         self._checked_keys: set[tuple[int, int]] = set()  # (actor_id, episode_id)
         self._cumulative_checked: int = 0
         self._cumulative_forgeries: int = 0
-        self._last_scan_metrics: Optional[DaemonMetrics] = None
+        self._last_scan_metrics: DaemonMetrics | None = None
 
         # Import checker (no martingale imports — isolation enforced)
         _root = Path(__file__).parent.parent.parent

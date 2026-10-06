@@ -7,7 +7,6 @@ Floats are rejected loudly except at explicitly declared boundaries (T4 only).
 from fractions import Fraction
 from typing import Union
 
-
 ExactNumber = Union[Fraction, int]
 
 

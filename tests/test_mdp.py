@@ -1,6 +1,8 @@
 """Tests for mdp.py — rational MDPs and exact enumeration engine."""
-import pytest
 from fractions import Fraction
+
+import pytest
+
 from martingale.mdp import MDP, enumerate_trajectories, feasibility_count
 
 

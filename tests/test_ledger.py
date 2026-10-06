@@ -1,9 +1,11 @@
 """Tests for ledger.py — hash-chained trajectory attestations."""
-import pytest
 from fractions import Fraction
-from martingale.revision import RevisionStore, Revision
-from martingale.ledger import Ledger, ActionRecord, TrajectoryRecord
+
+import pytest
+
 from martingale.draw import DrawResult
+from martingale.ledger import ActionRecord, Ledger, TrajectoryRecord
+from martingale.revision import Revision, RevisionStore
 
 
 def _make_rev(store, probs):

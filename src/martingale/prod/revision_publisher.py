@@ -1,89 +1,74 @@
 """
-prod/revision_publisher.py — Publish model checkpoints as content-addressed revisions.
+prod/revision_publisher.py — publish model checkpoints as LLMRevisions.
 
-For production models (float parameters), the "policy table" is replaced by a
-special-schema revision that encodes the checkpoint digest. This preserves the
-content-addressed integrity property while being compatible with float-param models.
+Replaces the 2026-10-05 prototype that stored a checkpoint as a fake 1x1
+rational table (docs/nonclaims.md, "Production layer"). A revision is now the
+content-addressed manifest of design.md section 7: weights digest over raw
+tensor bytes, tokenizer digest, sampler config, learner step, parent.
 
-The revision digest identifies the checkpoint uniquely; the IS weight computation
-uses the model's log-probabilities directly (float32), not the table.
+    rec = Recorder("./ws")
+    pub = RevisionPublisher(rec, tokenizer=tokenizer_json_bytes, sampler=SamplerConfig(temperature=1.0))
+    rev = pub.publish(model)            # step auto-increments; identical weights -> same revision
+    rev = pub.publish(model, step=120)  # or bind the learner's own step counter
 """
 from __future__ import annotations
 
-import hashlib
-import io
-from typing import TYPE_CHECKING, Union
+from typing import TYPE_CHECKING, Any, Mapping, Union
+
+from martingale.record.bits import GENESIS_DIGEST
+from martingale.record.recorder import Recorder
+from martingale.record.revision import LLMRevision, SamplerConfig, weights_digest
 
 if TYPE_CHECKING:  # torch is optional at import time
-    import torch
     import torch.nn as nn
 
-from martingale.revision import Revision
-from martingale.store.sqlite import SQLiteRevisionStore
+NO_TOKENIZER = GENESIS_DIGEST
+"""Tokenizer digest for non-LLM policies (tabular / vector observations)."""
 
 
-def checkpoint_digest(model_or_state_dict: Union[nn.Module, dict]) -> str:
+def checkpoint_digest(model_or_state_dict: Union[nn.Module, Mapping[str, Any]]) -> str:
+    """BLAKE2b-256 over sorted (name, dtype, shape, raw bytes) of every parameter.
+
+    Stable across torch versions (unlike a digest of torch.save output) and
+    equal for a module and its own state_dict.
     """
-    Compute a BLAKE2b-256 digest of a model's state dict.
-
-    Deterministic: same weights → same digest. Uses PyTorch's canonical
-    state dict serialization for byte-level stability.
-    """
-    import torch
-    import torch.nn as nn
-
-    if isinstance(model_or_state_dict, nn.Module):
-        state_dict = model_or_state_dict.state_dict()
-    else:
-        state_dict = model_or_state_dict
-
-    buf = io.BytesIO()
-    # Sort keys for determinism; save as CPU float32 tensors
-    ordered = {k: v.cpu().float() for k, v in sorted(state_dict.items())}
-    torch.save(ordered, buf)
-    return hashlib.blake2b(buf.getvalue(), digest_size=32).hexdigest()
+    state_dict = model_or_state_dict.state_dict() if hasattr(model_or_state_dict, "state_dict") else model_or_state_dict
+    return weights_digest(state_dict)
 
 
 class RevisionPublisher:
-    """
-    Publishes model checkpoints as revisions in the store.
+    def __init__(self, recorder: Recorder, tokenizer: bytes | str = NO_TOKENIZER,
+                 sampler: SamplerConfig | None = None) -> None:
+        self._rec = recorder
+        self._tokenizer = tokenizer
+        self._sampler = sampler or SamplerConfig()
+        last = recorder.ledger.max_step()
+        self._step = 0 if last is None else last + 1   # survives a restart on an existing ledger
 
-    The revision "table" uses a special schema:
-      {-1: {-1: "_checkpoint_digest"}}   → sentinel indicating a float-param revision
-      {"_checkpoint_digest": digest}      → embedded in the revision for lookup
+    @property
+    def recorder(self) -> Recorder:
+        return self._rec
 
-    The actual IS weight computation uses model log-probs directly (prod/weights.py).
-    The revision digest provides the attestation anchor for the ledger.
-    """
-
-    def __init__(self, store: SQLiteRevisionStore) -> None:
-        self._store = store
-        self._latest_digest: str | None = None
-
-    def publish(self, model_or_state_dict: Union[nn.Module, dict]) -> Revision:
-        """
-        Compute checkpoint digest and publish as a revision.
-
-        Returns the Revision (its .digest is the checkpoint digest).
-        """
-        cp_digest = checkpoint_digest(model_or_state_dict)
-        # Store using a special sentinel table that encodes the checkpoint digest.
-        # Using integer-keyed structure for compatibility with the Revision schema.
-        # We encode cp_digest as the single "probability" entry.
-        from fractions import Fraction
-        # Encode: state=0, action=0, prob = "checkpoint:<digest>" via rational hack
-        # Actually, use a dedicated "prod" table schema:
-        # We store the digest as a string entry in a special revision format.
-        # The prod revision uses state=-1, action=-1 as sentinel, value encodes digest.
-        # Since Fraction can't store strings, we use a hash of the digest as a Fraction.
-        digest_int = int(cp_digest, 16)
-        sentinel_num = digest_int % (10**30)
-        sentinel_den = 10**30
-        table = {0: {0: Fraction(sentinel_num, sentinel_den)}}
-        rev = self._store.publish(table)
-        self._latest_digest = rev.digest
-        return rev
+    @property
+    def latest(self) -> LLMRevision | None:
+        return self._rec.latest_revision
 
     @property
     def latest_digest(self) -> str | None:
-        return self._latest_digest
+        rev = self._rec.latest_revision
+        return None if rev is None else rev.digest
+
+    def publish(self, model_or_state_dict: Union[nn.Module, Mapping[str, Any]], step: int | None = None,
+                weights_uri: str | None = None) -> LLMRevision:
+        """Publish the weights as a revision. Unchanged weights with no explicit step reuse the
+        latest revision rather than minting a new one (idempotent per checkpoint)."""
+        wd = checkpoint_digest(model_or_state_dict)
+        latest = self._rec.latest_revision
+        if step is None and latest is not None and latest.weights_digest == wd \
+                and latest.sampler == self._sampler:
+            return latest
+        if step is None:
+            step = self._step if latest is None else latest.step + 1
+        rev = self._rec.publish_revision(wd, self._tokenizer, self._sampler, step=step, weights_uri=weights_uri)
+        self._step = step
+        return rev

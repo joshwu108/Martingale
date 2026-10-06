@@ -1,6 +1,7 @@
 """Tests for `martingale serve` CLI command."""
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
 from click.testing import CliRunner
 
 from martingale.cli import cli
@@ -65,9 +66,10 @@ class TestServeCommand:
     def test_serve_initialises_checker_daemon(self, tmp_path):
         """serve creates a CheckerDaemon and starts background scanning."""
         from fractions import Fraction
-        from martingale.store.sqlite import SQLiteRevisionStore, SQLiteLedger
+
         from martingale.draw import draw_action
-        from martingale.ledger import ActionRecord, GENESIS_DIGEST
+        from martingale.ledger import GENESIS_DIGEST, ActionRecord
+        from martingale.store.sqlite import SQLiteLedger, SQLiteRevisionStore
 
         # Populate workspace with a trajectory
         store = SQLiteRevisionStore(tmp_path / "revisions.db")

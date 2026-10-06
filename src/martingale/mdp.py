@@ -12,16 +12,18 @@ Mixed-revision support: the policy argument to enumerate_trajectories may be
 from __future__ import annotations
 
 from fractions import Fraction
-from typing import Iterator, Union
+from typing import TYPE_CHECKING, Iterator, Union
 
-from martingale.rational import check_simplex, to_fraction
+from martingale.rational import to_fraction
 
+if TYPE_CHECKING:  # circular at runtime
+    from martingale.policy import RationalPolicy
 
 # Type aliases
 TransitionTable = dict[int, dict[int, dict[int, Fraction]]]  # T[s][a][s'] = prob
 RewardTable = dict[int, dict[int, dict[int, Fraction]]]       # R[s][a][s'] = reward
 PolicyDict = dict[int, dict[int, Fraction]]                   # π[s][a] = prob
-PerStepPolicy = Union[PolicyDict, list[PolicyDict]]
+PerStepPolicy = Union[PolicyDict, "RationalPolicy", list[Union[PolicyDict, "RationalPolicy"]]]
 
 
 def feasibility_count(n_states: int, n_actions: int, horizon: int, check: bool = False) -> int:

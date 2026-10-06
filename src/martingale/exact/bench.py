@@ -165,17 +165,17 @@ def check_unbiased(
         mdp = make_mdp(cseed, n_states, n_actions, horizon)
         target = make_policy(cseed + b"pi", mdp.states, mdp.actions)
         true_grad = on_policy_gradient(mdp, target)
-        sq_true = sum(v * v for v in true_grad.values())
+        sq_true = sum((v * v for v in true_grad.values()), Fraction(0))
         for lag in lags:
             behavior = make_stale_policy(target, mdp, lag, alpha, cseed + b"lag")
             est_grad = expected_gradient(mdp, estimator, target, behavior)
             bias = {key: est_grad[key] - true_grad[key] for key in true_grad}
-            sq_bias = sum(v * v for v in bias.values())
+            sq_bias = sum((v * v for v in bias.values()), Fraction(0))
             rel = sq_bias / sq_true if sq_true != 0 else None
             certs.append(BiasCertificate(
                 config_id=i, n_states=n_states, n_actions=n_actions, horizon=horizon,
                 lag=lag, bias=bias, sq_bias=sq_bias, sq_true_norm=sq_true, rel_sq_bias=rel,
             ))
 
-    label = name or getattr(estimator, "__name__", type(estimator).__name__)
+    label = str(name or getattr(estimator, "__name__", type(estimator).__name__))
     return BenchReport(estimator_name=label, seed=seed, n_configs=n_configs, certificates=tuple(certs))

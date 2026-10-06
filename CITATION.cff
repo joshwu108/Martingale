@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "martingale: exact off-policy staleness accounting for asynchronous policy-gradient RL"
+version: 0.2.0
+license: Apache-2.0
+date-released: 2026-10-05
+repository-code: "https://github.com/joshwu108/Martingale"
+authors:
+  - family-names: Wu
+    given-names: Joshua
+keywords:
+  - reinforcement-learning
+  - rlhf
+  - grpo
+  - ppo
+  - importance-sampling
+  - provenance
+  - async-rl

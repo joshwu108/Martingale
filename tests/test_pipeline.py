@@ -6,21 +6,21 @@ Tests focus on:
 - Scripted interleavings: deterministic-schedule harness
 - SIGKILL cut points: recovery leaves ledger consistent
 """
-import pytest
-import time
 import tempfile
+import time
 from fractions import Fraction
 from pathlib import Path
 
+import pytest
+
+from checker.verify import verify_ledger
+from martingale.ledger import GENESIS_DIGEST, Ledger
 from martingale.pipeline import (
+    LedgerConsistencyError,
     PipelineConfig,
     run_pipeline,
-    LedgerConsistencyError,
 )
 from martingale.revision import RevisionStore
-from martingale.ledger import Ledger, GENESIS_DIGEST
-from checker.verify import verify_ledger
-
 
 SEED = b"pipeline-test-seed-01"
 

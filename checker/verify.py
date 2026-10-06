@@ -27,8 +27,7 @@ import json
 import struct
 from fractions import Fraction
 from pathlib import Path
-from typing import Iterator
-
+from typing import Any
 
 # ===== Constants =====
 GENESIS_DIGEST = "0" * 64
@@ -44,7 +43,7 @@ def _fraction_to_str(f: Fraction) -> str:
 
 def _canonical_revision_bytes(table: dict) -> bytes:
     """Canonical bytes for a policy table (must match revision.py)."""
-    canonical = {}
+    canonical: dict[str, dict[str, str]] = {}
     for s in sorted(table.keys(), key=int):
         canonical[str(s)] = {}
         for a in sorted(table[s].keys(), key=int):
@@ -158,7 +157,7 @@ def _load_revision_table(store_dir: Path, digest: str) -> dict[int, dict[int, Fr
         raise KeyError(f"Revision not found in store: {digest}")
     with open(path, "rb") as f:
         payload = json.loads(f.read())
-    stored_digest = payload.get("digest", "")
+    payload.get("digest", "")
     table = {
         int(s): {int(a): Fraction(p_str) for a, p_str in action_probs.items()}
         for s, action_probs in payload["table"].items()
@@ -301,7 +300,7 @@ def verify_ledger(
 
     Returns a report dict with counts and any errors found.
     """
-    report = {"total": 0, "passed": 0, "failed": 0, "errors": []}
+    report: dict[str, Any] = {"total": 0, "passed": 0, "failed": 0, "errors": []}
 
     for path in sorted(ledger_dir.glob("actor*.json")):
         with open(path, "rb") as f:

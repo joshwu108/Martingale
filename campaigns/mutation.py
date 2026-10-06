@@ -22,7 +22,6 @@ Results committed to results/mutation_report.json.
 """
 from __future__ import annotations
 
-import copy
 import json
 import sys
 from fractions import Fraction
@@ -31,7 +30,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from martingale.draw import draw_action
-from martingale.ledger import ActionRecord, Ledger, GENESIS_DIGEST
+from martingale.ledger import GENESIS_DIGEST, ActionRecord, Ledger
 from martingale.revision import RevisionStore
 
 # Import checker without importing martingale
@@ -95,12 +94,11 @@ def run_mutation_campaign(tmp_path: Path) -> dict:
     traj_dict, store_dir, ledger_dir, other_rev_digest, rev_r, rev_r1, probs_r1 = \
         _build_base_traj(tmp_path)
 
-    mutants = []
     results = []
     n_records = len(traj_dict["action_records"])
 
     for step_idx in range(n_records):
-        base = json.loads(json.dumps(traj_dict))  # deep copy
+        json.loads(json.dumps(traj_dict))  # deep copy
 
         # 1. tampered_action
         m = json.loads(json.dumps(traj_dict))
@@ -219,6 +217,7 @@ def run_mutation_campaign(tmp_path: Path) -> dict:
                 "prev_digest": GENESIS_DIGEST,
             }
             import hashlib
+
             from checker.verify import _record_canonical_bytes
             rec_dict["digest"] = hashlib.blake2b(
                 _record_canonical_bytes(
@@ -263,7 +262,7 @@ def main(tmp_path: Path = None) -> None:
     if tmp_path is None:
         tmp_path = Path(tempfile.mkdtemp(prefix="martingale_mutation_"))
     RESULTS_DIR.mkdir(exist_ok=True)
-    print(f"=== Mutation Campaign ===")
+    print("=== Mutation Campaign ===")
     print(f"Working directory: {tmp_path}")
 
     report = run_mutation_campaign(tmp_path)

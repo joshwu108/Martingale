@@ -1,0 +1,47 @@
+# Claim-to-evidence ledger
+
+Every claim the README makes has a row below. A README claim without a row
+here is a bug: either add the row (with an artifact that exists) or remove the
+claim from the README. Status values: ALIVE (evidence supports it at the
+stated scope), MIXED (some preregistered variants survive, some are dead),
+DEAD (preregistered kill rule fired), PINNED-DEFECT (known failure, pinned by
+a strict-xfail test). All scopes are bounded by `docs/nonclaims.md`.
+
+Commands are run from the repo root with `uv`. Campaign commands rewrite the
+named `results/*.json` file; `uv run pytest` is the check for test-backed rows.
+
+| Claim | Status | Evidence artifact | Test or command that regenerates it | Scope / non-claim pointer |
+|---|---|---|---|---|
+| T1: exact ledger with hash-chained attestations; forged ledgers are rejected (72/72 mutants, 0 surviving) | ALIVE | `results/mutation_report.json` | `uv run python -m campaigns.mutation`; `uv run pytest tests/test_ledger.py tests/test_checker.py` | Research pipeline ledgers only; not the prod layer. `docs/nonclaims.md` "Randomness / security" (BLAKE2b draw is not a security boundary) and "Production layer" |
+| T2: IS-REINFORCE is exactly unbiased; PPO and GRPO estimators have nonzero exact bias (40/40 configs each) | ALIVE | `results/identity_report.json` | `uv run python -m campaigns.identity`; `uv run pytest tests/test_estimators.py` | Tabular rational-simplex MDPs, \|S\|<=5, \|A\|<=3, H<=5. `docs/nonclaims.md` "Scope of MDPs", "Policy parameterization" (not a softmax) |
+| T3: PPO staleness bias grows monotonically with lag (4/4 cells monotone) | ALIVE | `results/staleness_report.json`; protocol and kill rule `docs/preregistration.md` | `uv run python -m campaigns.staleness` | Preregistered MDP family only. `docs/nonclaims.md` "Generality of staleness results (T3)" |
+| T4: float32/float64 clip-boundary flips exist. float32 eps=1/10: 183 flips (ALIVE); float64 eps=1/5: 21 flips (ALIVE); float64 eps=1/10: 0 (DEAD); float32 eps=1/5: 0 (DEAD) | MIXED | `results/boundary_report.json` (field `per_variant_stats`, `kill_verdict`) | `uv run python -m campaigns.boundary` (N=1000 candidates; preregistered production run is 10^5) | Flip frequency only, no claim flips cause learning failure. `docs/nonclaims.md` "Float results (T4)". The zero-flip variants are at N=1000 and are not evidence of absence |
+| T5: async protocol safety, scripted interleavings and SIGKILL crash cuts (9/9 scenarios verified) | ALIVE | `results/interleave_report.json` | `uv run python -m campaigns.interleave`; `uv run pytest tests/test_pipeline.py` | Single host, `multiprocessing`, two actors. `docs/nonclaims.md` "Scale", "Protocol (T5)" |
+| Durability: after SIGKILL at a cut point the ledger stays consistent (end-to-end: 3/3 trajectories verified) | ALIVE | `results/e2e_report.json` (key `sigkill`); `results/interleave_report.json` | `uv run python -m campaigns.e2e_demo`; `uv run pytest tests/test_pipeline.py::TestSIGKILLRecovery` | Cut points exercised by the campaign only. `docs/nonclaims.md` "Protocol (T5)" |
+| TLA+: correct pin-before-draw protocol satisfies the invariant; weakened ordering has a counterexample | MIXED | `spec/RevisionPin.tla`, `spec/RevisionPinWeakened.tla` (counterexample trace is written in the weakened spec's header comment) | `bash spec/check.sh` (skips if java or TLC jar absent). See gap below: no TLC output is committed and no test runs TLC | Finite model: 2 actors, 3 revisions, 2 actions. `docs/nonclaims.md` "Protocol (T5)" |
+| Checker independence: `checker/` imports nothing from `martingale`, and re-derives probabilities and draws from the revision store | ALIVE | `checker/verify.py`; `scripts/check_imports.py`; `.github/workflows/ci.yml` | `make check-imports`; `uv run pytest tests/test_checker.py tests/test_checker_daemon.py` | Sound for rational-table revisions only. Import isolation is a static check, not a proof of independent semantics. `docs/nonclaims.md` "Production layer" |
+| Estimator bench: `check_unbiased` returns exact rational bias certificates; every built-in defendant matches its expected unbiased/biased pattern | ALIVE | `results/estimator_bench_report.json` (field `expectations_met`, all true); `src/martingale/exact/` | `uv run python -m campaigns.estimator_bench`; `uv run pytest tests/test_exact_bench.py` | 20 seeded MDPs x lags {0,1,2,4,8}; tiny tabular family. `docs/nonclaims.md` "Policy parameterization" |
+| Estimator bench table: sequence-level IS unbiased at every lag; per-token schemes (TIS, MIS, PPO-clip, CISPO) biased from lag 1; sequence-level truncation unbiased until a trajectory ratio crosses the cap | ALIVE | `results/estimator_bench_report.json` (per-defendant, per-lag counts) | `uv run python -m campaigns.estimator_bench` | Does not transfer to softmax policies by itself. GSPO-style length-normalised ratios are not representable exactly and are absent (`src/martingale/exact/defendants.py` docstring) |
+| Bring-your-own estimator: any `(traj, target, behavior) -> {(state, action): Fraction}` can be certified | ALIVE | `src/martingale/exact/bench.py`; `tests/test_exact_bench.py` | `uv run pytest tests/test_exact_bench.py` | Estimator must use Fraction arithmetic; support errors raise rather than approximate |
+| Prod ledger is rejected by the independent checker (documented defect) | PINNED-DEFECT | `tests/test_prod_checker.py` (strict xfail); `docs/nonclaims.md` "Production layer"; `planning/2026-10-05-phase1-researcher-tool.md` section 0.1 | `uv run pytest tests/test_prod_checker.py -rx` | Never delete the test. When Phase 1 fixes the record schema it XPASSes (a strict-mode failure): remove the marker then |
+| Token record: production actor's ledger passes the independent checker | ALIVE | `tests/test_prod_checker.py` (was PINNED-DEFECT until 2026-10-06) | `uv run pytest tests/test_prod_checker.py` | `docs/nonclaims.md` "Token record"; the draw itself is not verifiable |
+| Token record: 90/90 single-fault forgeries rejected with the anchored ledger head (82/90 without) | ALIVE | `results/mutation_tokens_report.json` | `uv run python -m campaigns.mutation_tokens` | survivors without anchor are re-signed chains and trailing deletions, by design |
+| Token checker imports nothing from `martingale` | ALIVE | `checker/verify_tokens.py`, `scripts/check_imports.py` | `python3 scripts/check_imports.py` | AST-level check only |
+| `martingale report` separates lag-0 engine mismatch from staleness | ALIVE (synthetic) | `tests/test_diagnostics.py`, `martingale demo` output | `uv run pytest tests/test_diagnostics.py tests/test_demo.py` | no real-run numbers yet; ratios/ESS are float64 informational |
+| TRL `GRPOTrainer` integration records sequences and scores and the record verifies | ALIVE (fake trainer only) | `tests/test_trl_integration.py` | `uv run pytest tests/test_trl_integration.py` | never run against real TRL/vLLM; `benchmarks/modal/trl_grpo_vllm.py` not executed |
+| Torch reference corrections agree with the exact weight functions; float32 clip flips reproduced | ALIVE | `tests/test_corrections.py` | `uv run pytest tests/test_corrections.py` | agreement tested at 1e-9 on 200 seeded pairs |
+| `martingale demo` runs record + checker + report + bench in under 60 s without torch | ALIVE | `tests/test_demo.py` | `uv run martingale demo` | synthetic log-probs, not a model |
+| TLA+: `RevisionPin` holds `PinInvariant`, `RevisionPinWeakened` violates it | ALIVE (CI) | `spec/RevisionPin.cfg`, `spec/RevisionPinWeakened.cfg`, `.github/workflows/ci.yml` job `tla` | `TLC_JAR=... bash spec/check.sh` | TLC is not installed locally; the CI job is the regenerating step (added 2026-10-06, first run pending) |
+
+## Known gaps
+
+- 2026-10-06: the production-layer defect (prod ledger rejected by the checker) is fixed; its row above is ALIVE. Still open: the real TRL + vLLM run and the T4 10^5-candidate protocol.
+
+Things the README used to claim, retracted 2026-10-05 because no evidence
+supports them.
+
+- **Production toolchain** (retracted 2026-10-05). `prod.AsyncActor` ledgers fail the independent checker; see the PINNED-DEFECT row. The dashboard and `martingale verify` on prod ledgers report unverified numbers.
+- **Framework integrations for TRL, veRL, Lightning** (retracted 2026-10-05). The modules in `src/martingale/integrations/` publish checkpoint digests only and call no framework API (`tests/test_integrations.py` covers the shims, not any framework).
+- **TLA+ model checking is not reproducible from the repo.** `spec/check.sh` references `RevisionPin.cfg` and `RevisionPinWeakened.cfg`, which are not committed, and no test or CI step runs TLC. The TLA+ row is MIXED for this reason.
+- **T4 at preregistered scale.** The committed run uses N=1000 candidates, not the 10^5 in the preregistered production protocol.
+- **Exact-to-softmax transfer.** No evidence that any exact result applies to softmax or neural-network policies.

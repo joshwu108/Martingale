@@ -12,8 +12,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from fractions import Fraction
-from typing import Optional
-
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # torch is optional at import time
@@ -90,17 +88,17 @@ def compute_is_weights_exact_shadow(
       - flip_indices: indices where flips occurred
     """
     weights_float = compute_is_weights(log_pi, log_b)
-    lo_f = 1.0 - clip_eps
-    hi_f = 1.0 + clip_eps
+    # Classify in the tensor's own dtype: pulling the value out with .item() promotes
+    # it to float64 and manufactures flips that the float32 training path never sees.
+    float_clipped_t = (weights_float < (1.0 - clip_eps)) | (weights_float > (1.0 + clip_eps))
     lo_e = Fraction(1) - Fraction(clip_eps).limit_denominator(10**9)
     hi_e = Fraction(1) + Fraction(clip_eps).limit_denominator(10**9)
 
     flip_indices = []
     for i, (pi_e, b_e) in enumerate(zip(exact_pi, exact_b)):
         exact_r = pi_e / b_e
-        float_r = weights_float[i].item()
         exact_clipped = exact_r < lo_e or exact_r > hi_e
-        float_clipped = float_r < lo_f or float_r > hi_f
+        float_clipped = bool(float_clipped_t[i])
         if exact_clipped != float_clipped:
             flip_indices.append(i)
 

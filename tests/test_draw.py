@@ -1,7 +1,9 @@
 """Tests for draw.py — keyed BLAKE2b draws over rational simplexes."""
-import pytest
 from fractions import Fraction
-from martingale.draw import draw_action, DrawResult
+
+import pytest
+
+from martingale.draw import DrawResult, draw_action
 
 
 class TestDrawAction:

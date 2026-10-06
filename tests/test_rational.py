@@ -1,13 +1,15 @@
 """Tests for rational.py — exact conversions and serialization."""
-import pytest
 from fractions import Fraction
+
+import pytest
+
 from martingale.rational import (
-    to_fraction,
-    from_fraction_str,
-    fraction_to_str,
     assert_exact,
     assert_no_inf_nan,
     check_simplex,
+    fraction_to_str,
+    from_fraction_str,
+    to_fraction,
 )
 
 

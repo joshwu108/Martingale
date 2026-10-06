@@ -19,7 +19,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from martingale.estimators import on_policy_gradient, ppo_clipped_gradient
-from martingale.mdp import MDP, feasibility_count
+from martingale.mdp import MDP
 from martingale.policy import RationalPolicy, gradient_ascent_step
 from martingale.rational import fraction_to_str
 
@@ -186,7 +186,7 @@ def main() -> None:
         json.dump(report, f, indent=2)
     print(f"\nReport written to {out}")
 
-    print(f"\n=== Kill Rule Verdict ===")
+    print("\n=== Kill Rule Verdict ===")
     print(f"Cells: {report['n_cells']} total, "
           f"{report['cells_alive']} alive, {report['cells_dead']} dead")
     print(f"Global thesis: {report['kill_verdict']}")

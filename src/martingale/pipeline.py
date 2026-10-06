@@ -19,12 +19,10 @@ from __future__ import annotations
 import hashlib
 import multiprocessing
 import os
-import signal
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path
-from typing import Optional
 
 
 class LedgerConsistencyError(Exception):
@@ -44,7 +42,7 @@ class PipelineConfig:
     store_dir: Path
     ledger_dir: Path
     force_mixed_revisions: bool = False   # force revision change mid-trajectory
-    sigkill_after_episodes: Optional[int] = None  # kill actor after N episodes, then restart
+    sigkill_after_episodes: int | None = None  # kill actor after N episodes, then restart
 
     def __post_init__(self):
         self.store_dir = Path(self.store_dir)
@@ -55,7 +53,6 @@ class PipelineConfig:
 
 def _make_initial_policy(n_states: int, n_actions: int, seed: bytes) -> dict:
     """Generate a rational simplex policy table from a seed."""
-    import struct
     table = {}
     for s in range(n_states):
         raw = []
@@ -94,9 +91,9 @@ def _evolve_policy(table: dict, step: int, seed: bytes) -> dict:
 def _actor_worker(
     actor_id: int,
     cfg: PipelineConfig,
-    revision_queue: "multiprocessing.Queue",
-    done_event: "multiprocessing.Event",
-    kill_after: Optional[int],
+    revision_queue: multiprocessing.Queue,
+    done_event: multiprocessing.Event,
+    kill_after: int | None,
 ) -> None:
     """
     Actor process: pin revisions, draw actions, write to ledger.
@@ -109,7 +106,7 @@ def _actor_worker(
     """
     # Import here (in spawned process) to avoid cross-process state
     from martingale.draw import draw_action
-    from martingale.ledger import ActionRecord, Ledger, GENESIS_DIGEST
+    from martingale.ledger import GENESIS_DIGEST, ActionRecord, Ledger
     from martingale.revision import RevisionStore
 
     store = RevisionStore(cfg.store_dir)
@@ -278,7 +275,7 @@ def run_pipeline(cfg: PipelineConfig) -> None:
     timeout = 30.0  # seconds
     deadline = time.time() + timeout
 
-    for i, actor in enumerate(actors):
+    for _i, actor in enumerate(actors):
         remaining = max(0, deadline - time.time())
         actor.join(timeout=remaining)
 

@@ -10,15 +10,14 @@ Production storage backend with:
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
 from fractions import Fraction
 from pathlib import Path
 from typing import Iterator
 
-from martingale.ledger import ActionRecord, TrajectoryRecord, GENESIS_DIGEST
+from martingale.ledger import GENESIS_DIGEST, ActionRecord, TrajectoryRecord
 from martingale.rational import fraction_to_str, to_fraction
-from martingale.revision import Revision, _canonical_bytes, _fsync_file, _fsync_dir
+from martingale.revision import Revision
 from martingale.store.base import AbstractLedger, AbstractRevisionStore
 
 

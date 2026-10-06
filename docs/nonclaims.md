@@ -52,18 +52,43 @@ Every result is scoped to the constraints below.
   Python `multiprocessing`. No claim is made about correctness under
   OS-level scheduling policies other than those tested.
 
-## Production layer (`src/martingale/prod/`, `integrations/`) — as of 2026-10-05
+## Token record and production layer (`src/martingale/record/`, `prod/`, `integrations/`)
 
-- The production actor, revision publisher and framework shims are a
-  **prototype API sketch**, not a verified toolchain. A ledger written by
-  `prod.AsyncActor` is **rejected** by the independent checker: the publisher
-  stores a checkpoint as a 1x1 placeholder table, the actor samples with
-  `torch.multinomial` rather than the keyed draw and writes the state hash as
-  the draw integer, and float log-probs are rounded through
-  `limit_denominator`. `tests/test_prod_checker.py` documents this as a
-  strict expected failure.
-- The TRL, veRL and Lightning modules publish checkpoint digests only. They
-  do not call any framework API and no claim of framework integration is made.
-- No claim is made that exact-arithmetic results transfer to softmax or
-  neural-network policies on the production path; the production path has no
-  exact guarantees until the token-record schema (Phase 1) lands.
+- **The draw is not verifiable.** The checker verifies binding (digests,
+  chains, revision existence, sampler consistency, the anchored head). It
+  cannot verify that a token was actually sampled from the recorded
+  distribution: inference engines do not expose a keyed draw. This is the
+  difference between the exact ledger (draw re-derived) and the token record.
+- **Log-probs are whatever the source reported.** `logprobs_mode` in the
+  revision says whether they came from the engine's sampler, the trainer's
+  no-grad pass under the generating weights, or a recompute. The record binds
+  the bits; it does not claim they are the true sampling probabilities.
+- **Tamper evidence needs the anchor.** Without `TokenLedger.head()` published
+  out of band, a forger who re-signs a whole chain, deletes the last sequence
+  of an actor, or drops an unreferenced revision is not detected
+  (`results/mutation_tokens_report.json`, column `rejected_unanchored`).
+- **The TRL integration has been exercised only against a fake trainer**
+  (`tests/test_trl_integration.py`). The Modal runner
+  (`benchmarks/modal/trl_grpo_vllm.py`) that would produce a real vLLM + TRL
+  record has been written but not run (2026-10-06). Row matching between
+  generation and update is by (prompt ids, completion ids); duplicate rows in
+  one batch map to the first.
+- No distributed-filesystem, multi-host, or performance claims for the record.
+  Volume: about 250 bytes per token in JSON, less in SQLite; no compression
+  or sampling of sequences is implemented. The diagnostics keep one float per
+  scored token in memory for percentiles.
+- **One workspace per training process.** `TokenLedger` serialises writers on
+  one SQLite file (BEGIN IMMEDIATE, 30 s busy timeout) and each rank records
+  under its own actor id, but sharing one file across ranks over a network
+  filesystem is untested. Sharded (FSDP / ZeRO-3) state dicts are refused
+  rather than digested wrongly; gather the weights first.
+- **`logprobs_mode` names the source, not the engine's filtering.** It records
+  whether the bits came from the engine's sampler, the trainer's no-grad
+  pass, or a recompute. Whether vLLM reported pre- or post-temperature
+  log-probs is a property of the engine configuration (vLLM `logprobs_mode`)
+  and is not yet captured; at temperature != 1 the lag-0 floor therefore
+  includes a temperature effect.
+- The veRL and Lightning hooks publish revisions only; they do not record
+  tokens. No claim of veRL or Lightning integration beyond that.
+- History: until 2026-10-06 this layer was a prototype whose ledger the checker
+  rejected. `tests/test_prod_checker.py` records the fix.

@@ -20,7 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from campaigns.float_baselines import detect_boundary_flip, cumulative_product_divergence
+from campaigns.float_baselines import cumulative_product_divergence, detect_boundary_flip
 
 RESULTS_DIR = Path(__file__).parent.parent / "results"
 CAMPAIGN_SEED = b"martingale-boundary-campaign-v1"
@@ -35,7 +35,6 @@ HORIZON_LIST = [16, 64, 256]     # for cumulative product study
 
 def _float32_ulp(x: float) -> float:
     """Return the ULP (unit of least precision) of x in float32."""
-    import math
     # Use struct to get float32 representation
     x_f32 = struct.unpack('f', struct.pack('f', x))[0]
     if x_f32 == 0.0:
@@ -61,7 +60,6 @@ def _construct_near_boundary_pair(
     Method: target exact ratio r = (1 + clip_eps) ± j·ulp(clip_boundary).
     Then choose b_prob = Fraction(N, D) with N,D small, pi_prob = r * b_prob.
     """
-    import math
 
     # Target: upper boundary 1 + clip_eps
     boundary_f32 = float(1 + clip_eps)
@@ -223,7 +221,7 @@ def main() -> None:
         json.dump(report, f, indent=2, default=str)
     print(f"\nReport written to {out}")
 
-    print(f"\n=== Kill Rule Verdict ===")
+    print("\n=== Kill Rule Verdict ===")
     print(f"Global: {report['kill_verdict']}")
     for key, stat in report["per_variant_stats"].items():
         print(f"  {key}: {stat['n_flips']} flips → {stat['kill_verdict']}")

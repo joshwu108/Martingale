@@ -20,12 +20,10 @@ T2 negative: ppo_clipped_gradient != on_policy_gradient (bias is nonzero).
 from __future__ import annotations
 
 from fractions import Fraction
-from typing import Sequence
 
 from martingale.mdp import MDP, enumerate_trajectories
 from martingale.policy import RationalPolicy, log_prob_gradient
 from martingale.rational import to_fraction
-
 
 # Type for gradient: maps (state, action) → Fraction
 GradientDict = dict[tuple[int, int], Fraction]
@@ -43,7 +41,7 @@ def _trajectory_log_prob(traj: dict, policy: RationalPolicy) -> Fraction:
 def _trajectory_policy_prob(traj: dict, policy: RationalPolicy) -> Fraction:
     """Compute π(τ) = ∏_t π(a_t|s_t) as an exact Fraction."""
     prob = Fraction(1)
-    for (s, a, sp, r) in traj["steps"]:
+    for (s, a, _sp, _r) in traj["steps"]:
         prob *= policy.prob(s, a)
     return prob
 
@@ -65,7 +63,7 @@ def _trajectory_reinforce_grad(
     """
     G = traj["return"]
     grad = {(s, a): Fraction(0) for s in mdp.states for a in mdp.actions}
-    for (state, action, next_state, reward) in traj["steps"]:
+    for (state, action, _next_state, _reward) in traj["steps"]:
         step_grad = log_prob_gradient(policy, state, action)
         for a_i, g in step_grad.items():
             grad[(state, a_i)] += G * g
@@ -166,7 +164,7 @@ def ppo_clipped_gradient(
             steps = traj["steps"]
 
             # Per-step clipped IS ratio
-            for (state, action, next_state, reward) in steps:
+            for (state, action, _next_state, _reward) in steps:
                 pi_a = target.prob(state, action)
                 b_a = behavior.prob(state, action)
                 if b_a == Fraction(0):
@@ -241,7 +239,7 @@ def grpo_gradient(
             # Advantage: G - expected_wG (group-relative baseline)
             advantage = G - expected_wG
 
-            for (state, action, next_state, reward) in traj["steps"]:
+            for (state, action, _next_state, _reward) in traj["steps"]:
                 step_grad = log_prob_gradient(target, state, action)
                 for a_i, sg in step_grad.items():
                     grad[(state, a_i)] += p_b * w * advantage * sg
@@ -275,14 +273,14 @@ def per_trajectory_is_reinforce(
 
     # Build contrib from the trajectory steps
     # We need the MDP to build the zero gradient — instead build from steps
-    states_seen = list({s for (s, a, sp, r) in traj["steps"]})
-    actions_seen = list({a for (s, a, sp, r) in traj["steps"]})
+    states_seen = list({s for (s, a, _sp, _r) in traj["steps"]})
+    list({a for (s, a, _sp, _r) in traj["steps"]})
     # Also include actions from the policy table (need all actions for gradient)
-    all_actions = list(target._table[states_seen[0]].keys()) if states_seen else []
+    list(target._table[states_seen[0]].keys()) if states_seen else []
 
     G = traj["return"]
     contrib: dict[tuple[int, int], Fraction] = {}
-    for (state, action, next_state, reward) in traj["steps"]:
+    for (state, action, _next_state, _reward) in traj["steps"]:
         step_grad = log_prob_gradient(target, state, action)
         for a_i, sg in step_grad.items():
             key = (state, a_i)

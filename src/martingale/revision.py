@@ -24,7 +24,6 @@ from typing import Iterator
 
 from martingale.rational import fraction_to_str, to_fraction
 
-
 PolicyTable = dict[int, dict[int, Fraction]]
 
 

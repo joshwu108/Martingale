@@ -13,19 +13,18 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from typing import Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse, PlainTextResponse
 
 from martingale.checker_daemon import CheckerDaemon
-from martingale.store.sqlite import SQLiteRevisionStore, SQLiteLedger
+from martingale.store.sqlite import SQLiteLedger, SQLiteRevisionStore
 
 
 def create_app(
     store: SQLiteRevisionStore,
     ledger: SQLiteLedger,
-    daemon: Optional[CheckerDaemon] = None,
+    daemon: CheckerDaemon | None = None,
 ) -> FastAPI:
     """
     Create the FastAPI application bound to the given store/ledger/daemon.
@@ -45,7 +44,7 @@ def create_app(
         rows = store.revisions_ordered()
         return rows[-1][0] if rows else 0
 
-    def _latest_digest() -> Optional[str]:
+    def _latest_digest() -> str | None:
         rows = store.revisions_ordered()
         return rows[-1][1] if rows else None
 
@@ -82,7 +81,7 @@ def create_app(
         try:
             rev = store.get(digest)
         except KeyError:
-            raise HTTPException(status_code=404, detail="Revision not found")
+            raise HTTPException(status_code=404, detail="Revision not found") from None
         seq_map = _seq_map()
         return {
             "digest": digest,
@@ -116,7 +115,7 @@ def create_app(
         try:
             traj = ledger.load_trajectory(actor_id, episode_id)
         except KeyError:
-            raise HTTPException(status_code=404, detail="Trajectory not found")
+            raise HTTPException(status_code=404, detail="Trajectory not found") from None
         return traj.to_dict()
 
     # ── /api/staleness/histogram ──────────────────────────────────────────────
@@ -242,7 +241,7 @@ def create_app(
 
     @app.get("/metrics")
     def metrics():
-        from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+        from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
         return PlainTextResponse(
             generate_latest().decode("utf-8"),
             media_type=CONTENT_TYPE_LATEST,

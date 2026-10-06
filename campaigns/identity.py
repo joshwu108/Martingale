@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import sys
 from fractions import Fraction
 from pathlib import Path
@@ -27,9 +26,8 @@ from martingale.estimators import (
     on_policy_gradient,
     ppo_clipped_gradient,
 )
-from martingale.mdp import MDP, feasibility_count
+from martingale.mdp import feasibility_count
 from martingale.rational import fraction_to_str
-
 
 RESULTS_DIR = Path(__file__).parent.parent / "results"
 CAMPAIGN_SEED = b"martingale-identity-campaign-v1"
@@ -38,10 +36,12 @@ N_CONFIGS = 40
 
 from martingale.exact.random_mdp import (  # shared with martingale.exact (Phase 4-C)
     make_mdp as _make_mdp,
+)
+from martingale.exact.random_mdp import (
     make_policy as _make_policy,
-    make_rational_simplex as _make_rational_simplex,
+)
+from martingale.exact.random_mdp import (
     make_stale_policy as _make_stale_policy,
-    seeded_fraction as _seeded_fraction,
 )
 
 
@@ -178,7 +178,7 @@ def main() -> None:
     print(f"\nReport written to {out_path}")
 
     # Summary
-    print(f"\n=== Summary ===")
+    print("\n=== Summary ===")
     print(f"IS identity: {report['is_identity_passed']}/{N_CONFIGS} passed")
     print(f"PPO nonzero bias: {report['ppo_nonzero_bias']}/{N_CONFIGS}")
     print(f"GRPO nonzero bias: {report['grpo_nonzero_bias']}/{N_CONFIGS}")
