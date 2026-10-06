@@ -195,6 +195,11 @@ class TokenLedger:
                  for r in records],
             )
 
+    def has_scores(self, sequence_digest: str, train_revision_digest: str) -> bool:
+        return self._con.execute(
+            "SELECT 1 FROM scores WHERE sequence_digest=? AND train_revision_digest=? LIMIT 1",
+            (sequence_digest, train_revision_digest)).fetchone() is not None
+
     def scores_for(self, sequence_digest: str) -> list[ScoreRecord]:
         rows = self._con.execute(
             "SELECT record_json FROM scores WHERE sequence_digest=? ORDER BY rowid", (sequence_digest,)
@@ -254,7 +259,13 @@ class TokenLedger:
         _fsync_dir(out.parent)
         return out
 
+    def checkpoint_wal(self) -> None:
+        """Fold the write-ahead log into the main file (copying tokens.db alone is otherwise empty)."""
+        with self._lock:
+            self._con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
     def close(self) -> None:
+        self.checkpoint_wal()
         self._con.close()
 
 

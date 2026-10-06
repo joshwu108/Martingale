@@ -1,0 +1,189 @@
+{
+ "alarms": [
+  {
+   "kind": "unmatched",
+   "level": "error",
+   "step": 3,
+   "message": "8/8 loss rows were not matched to a recorded sequence; the record is incomplete (adapter lost row ids)",
+   "evidence": {
+    "unmatched": 8,
+    "seen": 8
+   }
+  },
+  {
+   "kind": "unmatched",
+   "level": "error",
+   "step": 4,
+   "message": "8/8 loss rows were not matched to a recorded sequence; the record is incomplete (adapter lost row ids)",
+   "evidence": {
+    "unmatched": 8,
+    "seen": 8
+   }
+  },
+  {
+   "kind": "unmatched",
+   "level": "error",
+   "step": 7,
+   "message": "8/8 loss rows were not matched to a recorded sequence; the record is incomplete (adapter lost row ids)",
+   "evidence": {
+    "unmatched": 8,
+    "seen": 8
+   }
+  },
+  {
+   "kind": "unmatched",
+   "level": "error",
+   "step": 8,
+   "message": "8/8 loss rows were not matched to a recorded sequence; the record is incomplete (adapter lost row ids)",
+   "evidence": {
+    "unmatched": 8,
+    "seen": 8
+   }
+  },
+  {
+   "kind": "unmatched",
+   "level": "error",
+   "step": 11,
+   "message": "8/8 loss rows were not matched to a recorded sequence; the record is incomplete (adapter lost row ids)",
+   "evidence": {
+    "unmatched": 8,
+    "seen": 8
+   }
+  },
+  {
+   "kind": "unmatched",
+   "level": "error",
+   "step": 12,
+   "message": "8/8 loss rows were not matched to a recorded sequence; the record is incomplete (adapter lost row ids)",
+   "evidence": {
+    "unmatched": 8,
+    "seen": 8
+   }
+  },
+  {
+   "kind": "stale_server",
+   "level": "error",
+   "step": 13,
+   "message": "lag-0 floor jumped 54.2x right after a new generation (floor 1.48e-01, trailing median 2.74e-03). PROXY: tokens the trainer believes are fresh disagree with it as if they were stale; the inference server may be serving old weights (failed or lagging sync).",
+   "evidence": {
+    "floor": 0.14812429197866805,
+    "trailing_median": 0.0027352522269216075,
+    "factor": 54.15379631931593
+   }
+  },
+  {
+   "kind": "unmatched",
+   "level": "error",
+   "step": 15,
+   "message": "8/8 loss rows were not matched to a recorded sequence; the record is incomplete (adapter lost row ids)",
+   "evidence": {
+    "unmatched": 8,
+    "seen": 8
+   }
+  },
+  {
+   "kind": "unmatched",
+   "level": "error",
+   "step": 16,
+   "message": "8/8 loss rows were not matched to a recorded sequence; the record is incomplete (adapter lost row ids)",
+   "evidence": {
+    "unmatched": 8,
+    "seen": 8
+   }
+  }
+ ],
+ "per_step_metrics": [
+  {
+   "martingale/floor_mean_abs_log_ratio": 0.0027352522269216075,
+   "martingale/ess_fraction_lag0": 0.9998069032032338,
+   "martingale/mean_abs_log_ratio_lag0": 0.0027352522269216075,
+   "martingale/tokens_lag0": 34.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/ess_fraction_lag1": 0.9999930115643116,
+   "martingale/mean_abs_log_ratio_lag1": 0.0017009917801866928,
+   "martingale/tokens_lag1": 30.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/floor_mean_abs_log_ratio": 0.8072307344875922,
+   "martingale/ess_fraction_lag0": 0.8890385401578046,
+   "martingale/mean_abs_log_ratio_lag0": 0.8072307344875922,
+   "martingale/tokens_lag0": 27.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/ess_fraction_lag1": 0.9255996070568282,
+   "martingale/mean_abs_log_ratio_lag1": 0.18963112286949832,
+   "martingale/tokens_lag1": 29.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/floor_mean_abs_log_ratio": 1.028667803858921,
+   "martingale/ess_fraction_lag0": 0.8889099874277724,
+   "martingale/mean_abs_log_ratio_lag0": 1.028667803858921,
+   "martingale/tokens_lag0": 27.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/ess_fraction_lag1": 0.8276063182311805,
+   "martingale/mean_abs_log_ratio_lag1": 1.679773342980658,
+   "martingale/tokens_lag1": 29.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/floor_mean_abs_log_ratio": 0.14812429197866805,
+   "martingale/ess_fraction_lag0": 0.24657089705107574,
+   "martingale/mean_abs_log_ratio_lag0": 0.14812429197866805,
+   "martingale/tokens_lag0": 32.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/ess_fraction_lag1": 0.9687025186649799,
+   "martingale/mean_abs_log_ratio_lag1": 0.18681228888180357,
+   "martingale/tokens_lag1": 32.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  }
+ ]
+}

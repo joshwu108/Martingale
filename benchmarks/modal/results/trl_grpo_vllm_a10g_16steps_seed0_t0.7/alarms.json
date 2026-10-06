@@ -1,0 +1,208 @@
+{
+ "alarms": [
+  {
+   "kind": "unmatched",
+   "level": "error",
+   "step": 3,
+   "message": "8/8 loss rows were not matched to a recorded sequence; the record is incomplete (adapter lost row ids)",
+   "evidence": {
+    "unmatched": 8,
+    "seen": 8
+   }
+  },
+  {
+   "kind": "unmatched",
+   "level": "error",
+   "step": 4,
+   "message": "8/8 loss rows were not matched to a recorded sequence; the record is incomplete (adapter lost row ids)",
+   "evidence": {
+    "unmatched": 8,
+    "seen": 8
+   }
+  },
+  {
+   "kind": "weights_unchanged",
+   "level": "error",
+   "step": 5,
+   "message": "generation at step 5 ran under the same trainer weights as the generation at step 1 although optimizer steps happened in between (frozen model, lr 0, or a broken optimizer)",
+   "evidence": {
+    "weights_digest": "68210f3405759d4e07cfc66b17d53b127a912e7f2c24eea5590dc308436b317b",
+    "previous_step": 1
+   }
+  },
+  {
+   "kind": "unmatched",
+   "level": "error",
+   "step": 7,
+   "message": "8/8 loss rows were not matched to a recorded sequence; the record is incomplete (adapter lost row ids)",
+   "evidence": {
+    "unmatched": 8,
+    "seen": 8
+   }
+  },
+  {
+   "kind": "unmatched",
+   "level": "error",
+   "step": 8,
+   "message": "8/8 loss rows were not matched to a recorded sequence; the record is incomplete (adapter lost row ids)",
+   "evidence": {
+    "unmatched": 8,
+    "seen": 8
+   }
+  },
+  {
+   "kind": "weights_unchanged",
+   "level": "error",
+   "step": 9,
+   "message": "generation at step 9 ran under the same trainer weights as the generation at step 5 although optimizer steps happened in between (frozen model, lr 0, or a broken optimizer)",
+   "evidence": {
+    "weights_digest": "68210f3405759d4e07cfc66b17d53b127a912e7f2c24eea5590dc308436b317b",
+    "previous_step": 5
+   }
+  },
+  {
+   "kind": "unmatched",
+   "level": "error",
+   "step": 11,
+   "message": "8/8 loss rows were not matched to a recorded sequence; the record is incomplete (adapter lost row ids)",
+   "evidence": {
+    "unmatched": 8,
+    "seen": 8
+   }
+  },
+  {
+   "kind": "unmatched",
+   "level": "error",
+   "step": 12,
+   "message": "8/8 loss rows were not matched to a recorded sequence; the record is incomplete (adapter lost row ids)",
+   "evidence": {
+    "unmatched": 8,
+    "seen": 8
+   }
+  },
+  {
+   "kind": "weights_unchanged",
+   "level": "error",
+   "step": 13,
+   "message": "generation at step 13 ran under the same trainer weights as the generation at step 9 although optimizer steps happened in between (frozen model, lr 0, or a broken optimizer)",
+   "evidence": {
+    "weights_digest": "68210f3405759d4e07cfc66b17d53b127a912e7f2c24eea5590dc308436b317b",
+    "previous_step": 9
+   }
+  },
+  {
+   "kind": "unmatched",
+   "level": "error",
+   "step": 15,
+   "message": "8/8 loss rows were not matched to a recorded sequence; the record is incomplete (adapter lost row ids)",
+   "evidence": {
+    "unmatched": 8,
+    "seen": 8
+   }
+  },
+  {
+   "kind": "unmatched",
+   "level": "error",
+   "step": 16,
+   "message": "8/8 loss rows were not matched to a recorded sequence; the record is incomplete (adapter lost row ids)",
+   "evidence": {
+    "unmatched": 8,
+    "seen": 8
+   }
+  }
+ ],
+ "per_step_metrics": [
+  {
+   "martingale/floor_mean_abs_log_ratio": 0.00022291789640751,
+   "martingale/ess_fraction_lag0": 0.999999827848767,
+   "martingale/mean_abs_log_ratio_lag0": 0.00022291789640751,
+   "martingale/tokens_lag0": 26.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/ess_fraction_lag1": 0.9999999314373861,
+   "martingale/mean_abs_log_ratio_lag1": 7.466838017459547e-05,
+   "martingale/tokens_lag1": 30.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/floor_mean_abs_log_ratio": 9.812378666369855e-06,
+   "martingale/ess_fraction_lag0": 0.9999999999049026,
+   "martingale/mean_abs_log_ratio_lag0": 9.812378666369855e-06,
+   "martingale/tokens_lag0": 27.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/ess_fraction_lag1": 0.9999999999167365,
+   "martingale/mean_abs_log_ratio_lag1": 8.15984136069942e-06,
+   "martingale/tokens_lag1": 29.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/floor_mean_abs_log_ratio": 1.3998227443692115e-06,
+   "martingale/ess_fraction_lag0": 0.9999999999903699,
+   "martingale/mean_abs_log_ratio_lag0": 1.3998227443692115e-06,
+   "martingale/tokens_lag0": 27.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/ess_fraction_lag1": 0.9999999999827704,
+   "martingale/mean_abs_log_ratio_lag1": 2.3227132832571755e-06,
+   "martingale/tokens_lag1": 29.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/floor_mean_abs_log_ratio": 2.3345465005375488e-05,
+   "martingale/ess_fraction_lag0": 0.9999999977713567,
+   "martingale/mean_abs_log_ratio_lag0": 2.3345465005375488e-05,
+   "martingale/tokens_lag0": 32.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/ess_fraction_lag1": 0.9999999974651581,
+   "martingale/mean_abs_log_ratio_lag1": 2.671787205987819e-05,
+   "martingale/tokens_lag1": 32.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  }
+ ]
+}

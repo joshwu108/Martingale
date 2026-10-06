@@ -12,13 +12,44 @@ trainer later thought.
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 
-> **Status (2026-10-06).** Record, diagnosis, TRL `GRPOTrainer` integration and an
-> exact estimator bench are implemented and tested (`make check`: ruff, mypy, 394
-> tests). The TRL integration has been exercised against a fake trainer only; the
-> first real vLLM run (`benchmarks/modal/trl_grpo_vllm.py`) is written and not yet
-> executed, so every number below is synthetic. Claims map to artifacts in
+> **Status (2026-10-06).** Record, live diagnosis with alarms, TRL `GRPOTrainer`
+> integration and an exact estimator bench are implemented and tested (`make check`:
+> ruff, mypy, 415 tests). Two real TRL + vLLM runs on Modal completed and verified;
+> their numbers are below. Claims map to artifacts in
 > [`paper/claim_evidence.md`](paper/claim_evidence.md); limits in
 > [`docs/nonclaims.md`](docs/nonclaims.md).
+
+## First real run (2026-10-06)
+
+Qwen2.5-0.5B-Instruct, TRL 1.13 GRPO with vLLM 0.28 colocated on one A10G, 16 steps,
+each generation batch reused over two optimizer steps. The independent checker verified
+the record (64 sequences, 240 tokens, 12 revisions) against the head the trainer printed.
+What the doctor found, from `benchmarks/modal/results/`:
+
+| temperature | lag-0 floor, mean abs log r | lag-0 median ratio | lag-0 max abs log r |
+|---|---|---|---|
+| 1.0 | 2.7e-3 on the first generation, then 0.81, 1.03, 0.15 | 1.0007 | 9.26 |
+| 0.7 | 6.1e-5 | 1.0000 | 0.001 |
+
+The mean says the engine and the trainer disagree by half a nat on fresh tokens; the
+median says they agree on almost every token. The gap is a handful of low-probability
+tokens that temperature 1 sampled and that bf16 and fp32 score nats apart, and it grew as
+the policy sharpened (entropy 0.025 to 0.002 over the run). That is the training-inference
+mismatch the TIS/MIS and FP16 papers describe, measured per token on a live run. The
+doctor's first version flagged it as a stale server; it now separates the two by whether
+the median moved, and prints:
+
+```
+- The engine floor is large (mean |log r| = 4.53e-01) but the median ratio is 1.0007: the
+  mismatch sits in a few low-probability tokens, the known bf16-vs-fp32 tail effect, worse
+  at temperature 1 and as the policy sharpens. Not a stale server (that would move the
+  median). FP16, a bit-exact engine, or masking tail ratios (MIS) shrinks it.
+```
+
+Two adapter bugs surfaced on this run and are fixed: the second pass over a generation
+batch was not scored (the records hold lags 0 and 1 only), and the copied database was
+empty because the write-ahead log had not been checkpointed. The exports and reports were
+unaffected. Details in `benchmarks/modal/results/README.md`.
 
 ## Sixty seconds, no GPU
 
@@ -28,32 +59,7 @@ uv sync
 uv run martingale demo
 ```
 
-The demo records a synthetic run and prints the diagnosis:
-
-```
-# martingale doctor
-
-- Of the off-policy signal in stale tokens, 100% is staleness and 0% is engine-vs-trainer
-  mismatch (lag-0 floor: mean |log r| = 1.05e-06).
-- Staleness dominates: lower num_iterations / the async level, or use a correction that is
-  unbiased at the sequence level (see martingale.exact).
-- 8 sequences span a weight update (in-flight sync); their tokens carry two revisions and
-  are bucketed by their own lag.
-
-| lag | tokens | seqs (mixed) | mean log r | mean abs log r | max abs log r | ratio p95 | ESS/n | clipped@0.1 | clipped@0.2 |
-|---|---|---|---|---|---|---|---|---|---|
-| 0 | 104 | 14 (2) | +1.052e-07 | 1.049e-06 | 2.027e-06 | 1.0000 | 1.000 | 0.000 | 0.000 |
-| 2 | 100 | 15 (5) | -1.971e-02 | 1.541e-01 | 2.944e-01 | 1.2936 | 0.971 | 0.690 | 0.310 |
-| 3 | 96 | 15 (6) | -6.704e-02 | 2.029e-01 | 4.483e-01 | 1.4968 | 0.944 | 0.708 | 0.510 |
-| 4 | 84 | 12 (3) | +4.371e-02 | 3.248e-01 | 5.962e-01 | 1.7080 | 0.896 | 0.857 | 0.762 |
-```
-
-Lag is the number of optimizer steps between the weights that generated a token
-and the weights that scored it. Lag-0 tokens were scored by the weights that
-produced them, so their disagreement is pure engine mismatch: that is the floor,
-and everything above it is staleness. Log-ratios are exact differences of the
-recorded float bits; ratios, effective sample size and clipped fractions are
-float64 and labelled informational in the JSON.
+The demo records a synthetic run and prints the same diagnosis for it.
 
 ## The problem
 
@@ -162,7 +168,8 @@ SIGKILL crash cuts); its five theses and their reports are in
 
 ## Non-claims (short form; full list in `docs/nonclaims.md`)
 
-- No real-run numbers yet; the TRL integration is tested against a fake trainer.
+- Two real runs of 16 steps on a 0.5B model; no claim beyond them. The runs that produced them
+  had two adapter bugs (second-pass scores dropped, empty database copy), since fixed.
 - The lag-0 floor includes whatever the engine's log-prob mode is (vLLM
   processed vs raw log-probs are a config property not yet captured).
 - The record binds what the engine reported; it cannot verify the draw.

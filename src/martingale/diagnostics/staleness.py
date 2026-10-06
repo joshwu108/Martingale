@@ -209,24 +209,43 @@ def attribute(d: dict) -> dict:
     }
 
 
+def tail_dominated(bucket_float: dict, median_band: float = 0.02) -> bool:
+    """A bucket whose median ratio is within `median_band` of 1 while its mean |log r| is large is
+    tail-dominated: most tokens agree, a few disagree by nats. A shifted distribution (wrong
+    weights in the engine) moves the median as well."""
+    return abs(bucket_float["ratio_p50"] - 1.0) <= median_band and bucket_float["mean_abs_log_ratio"] > 1e-2
+
+
 def diagnosis(d: dict, eps: float = 0.2) -> list[str]:
     """Plain-language lines a researcher can act on. Thresholds are heuristics, stated inline."""
     a = attribute(d)
     lines: list[str] = []
     f = a["float_informational"]
-    if f["staleness_share"] is None:
+    if f["floor"] is None:
         lines.append("No lag-0 tokens: score at least one generation batch with the weights that produced it "
                      "(num_iterations=1 or steps_per_generation=1 for one step) to measure the engine floor.")
     else:
-        lines.append(f"Of the off-policy signal in stale tokens, {100 * f['staleness_share']:.0f}% is staleness and "
-                     f"{100 * f['engine_share']:.0f}% is engine-vs-trainer mismatch (lag-0 floor: mean |log r| = {f['floor']:.2e}).")
+        if f["staleness_share"] is None:
+            lines.append(f"Only lag-0 tokens so far (engine floor: mean |log r| = {f['floor']:.2e}); no stale tokens to attribute.")
+        else:
+            lines.append(f"Of the off-policy signal in stale tokens, {100 * f['staleness_share']:.0f}% is staleness and "
+                         f"{100 * f['engine_share']:.0f}% is engine-vs-trainer mismatch (lag-0 floor: mean |log r| = {f['floor']:.2e}).")
+            if f["staleness_share"] > 0.5:
+                lines.append("Staleness dominates: lower num_iterations / the async level, or use a correction that is "
+                             "unbiased at the sequence level (see martingale.exact).")
         if f["floor"] > 1e-2:
-            lines.append("The engine floor is large (>1e-2 mean |log r|): the inference engine and the trainer disagree "
-                         "even on fresh tokens. Check dtype (bf16 vs fp32 lm_head), sampler settings, and whether the "
-                         "server's weights were actually updated; FP16 or a bit-exact engine shrinks this.")
-        if f["staleness_share"] > 0.5:
-            lines.append("Staleness dominates: lower num_iterations / the async level, or use a correction that is "
-                         "unbiased at the sequence level (see martingale.exact).")
+            lag0 = d["lag0_floor"]["float_informational"]
+            if tail_dominated(lag0):
+                lines.append(f"The engine floor is large (mean |log r| = {f['floor']:.2e}) but the median ratio is "
+                             f"{lag0['ratio_p50']:.4f}: the mismatch sits in a few low-probability tokens, the known "
+                             "bf16-vs-fp32 tail effect, worse at temperature 1 and as the policy sharpens. Not a stale "
+                             "server (that would move the median). FP16, a bit-exact engine, or masking tail ratios "
+                             "(MIS) shrinks it.")
+            else:
+                lines.append(f"The engine floor is large (mean |log r| = {f['floor']:.2e}) and the median ratio is "
+                             f"{lag0['ratio_p50']:.4f}: the engine and the trainer disagree on ordinary tokens. "
+                             "Check dtype, sampler settings, and whether the engine's weights were actually updated "
+                             "(stale server).")
     for b in d["by_lag"]:
         fi = b["float_informational"]
         if b["lag"] > 0 and fi["ess_fraction"] < 0.5:

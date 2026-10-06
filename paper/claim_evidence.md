@@ -28,15 +28,16 @@ named `results/*.json` file; `uv run pytest` is the check for test-backed rows.
 | Token record: 90/90 single-fault forgeries rejected with the anchored ledger head (82/90 without) | ALIVE | `results/mutation_tokens_report.json` | `uv run python -m campaigns.mutation_tokens` | survivors without anchor are re-signed chains and trailing deletions, by design |
 | Token checker imports nothing from `martingale` | ALIVE | `checker/verify_tokens.py`, `scripts/check_imports.py` | `python3 scripts/check_imports.py` | AST-level check only |
 | `martingale report` separates lag-0 engine mismatch from staleness | ALIVE (synthetic) | `tests/test_diagnostics.py`, `martingale demo` output | `uv run pytest tests/test_diagnostics.py tests/test_demo.py` | no real-run numbers yet; ratios/ESS are float64 informational |
-| TRL `GRPOTrainer` integration records sequences and scores and the record verifies | ALIVE (fake trainer only) | `tests/test_trl_integration.py` | `uv run pytest tests/test_trl_integration.py` | never run against real TRL/vLLM; `benchmarks/modal/trl_grpo_vllm.py` not executed |
+| TRL `GRPOTrainer` integration records sequences and scores and the record verifies on a real run | ALIVE (2 real runs) | `benchmarks/modal/results/*/verify.json`, `tests/test_trl_integration.py` | `modal run benchmarks/modal/trl_grpo_vllm.py` | 0.5B model, 16 steps; adapter bugs in that version listed in `benchmarks/modal/results/README.md` |
 | Torch reference corrections agree with the exact weight functions; float32 clip flips reproduced | ALIVE | `tests/test_corrections.py` | `uv run pytest tests/test_corrections.py` | agreement tested at 1e-9 on 200 seeded pairs |
 | `martingale demo` runs record + checker + report + bench in under 60 s without torch | ALIVE | `tests/test_demo.py` | `uv run martingale demo` | synthetic log-probs, not a model |
 | TLA+: `RevisionPin` holds `PinInvariant`, `RevisionPinWeakened` violates it | ALIVE (CI) | `spec/RevisionPin.cfg`, `spec/RevisionPinWeakened.cfg`, `.github/workflows/ci.yml` job `tla` | `TLC_JAR=... bash spec/check.sh` | TLC is not installed locally; the CI job is the regenerating step (added 2026-10-06, first run pending) |
 | Live doctor: incremental diagnosis equals the full decomposition exactly; seven alarms fire once each on records built to trigger them; metrics land in TRL's log; a skipped weight update halts a fake run | ALIVE (fake trainer) | `tests/test_incremental.py`, `tests/test_alarms.py`, `tests/test_trl_monitor.py` | `uv run pytest tests/test_incremental.py tests/test_alarms.py tests/test_trl_monitor.py` | thresholds are heuristics; `stale_server` is a proxy (`docs/nonclaims.md`) |
+| Lag-0 mismatch at temperature 1 is tail-dominated (median ratio 1.0007, mean abs log r 0.45, max 9.3) and grows as the policy sharpens; at temperature 0.7 the floor is 6e-5 | ALIVE (1 run each) | `benchmarks/modal/results/trl_grpo_vllm_a10g_16steps_seed0_t1.0/report.json`, `..._t0.7/report.json` | same command with `--temperature 0.7` | one seed, one model; no generality claim |
 
 ## Known gaps
 
-- 2026-10-06: the production-layer defect (prod ledger rejected by the checker) is fixed; its row above is ALIVE. Still open: the real TRL + vLLM run and the T4 10^5-candidate protocol.
+- 2026-10-06: the production-layer defect (prod ledger rejected by the checker) is fixed; its row above is ALIVE. Still open: a re-run with the fixed adapter (lags 2 and 3) and the T4 10^5-candidate protocol.
 
 Things the README used to claim, retracted 2026-10-05 because no evidence
 supports them.

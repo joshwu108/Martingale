@@ -8,10 +8,13 @@ checked. Two alarms are deliberately distinct:
   weights_unchanged  the TRAINER's weights digest did not change across an
                      optimizer step (broken optimizer, lr 0, frozen model) —
                      exact, from the record.
-  stale_server       the lag-0 engine floor jumped after a new generation —
-                     a PROXY for the inference server serving old weights,
-                     because the record holds the trainer's digest, not the
-                     server's. The message says it is a proxy.
+  stale_server       the lag-0 engine floor jumped after a new generation AND
+                     the median ratio moved — a PROXY for the inference server
+                     serving old weights, because the record holds the
+                     trainer's digest, not the server's. The message says so.
+  floor_tail         the floor jumped but the median ratio stayed at 1: a few
+                     low-probability tokens disagree by nats (the bf16-vs-fp32
+                     tail effect seen on the first real run, 2026-10-06). Warn.
 """
 from __future__ import annotations
 
@@ -33,6 +36,7 @@ class AlarmConfig:
     span_max_fraction: float = 0.05  # fraction of new sequences spanning > 2 revisions
     unmatched_max_fraction: float = 0.01
     min_floor_tokens: int = 32      # ignore floor estimates from fewer lag-0 tokens
+    median_band: float = 0.02       # |ratio_p50 - 1| beyond this means the whole distribution shifted, not just tails
 
 
 @dataclass(frozen=True)
@@ -83,13 +87,22 @@ def evaluate(diag: StepDiagnosis, history: AlarmHistory, cfg: AlarmConfig = Alar
     # floor jump / stale server proxy
     if floor_ok and med is not None and med > 0:
         ratio = floor / med
-        if new_generation and ratio > cfg.stale_server_factor:
+        p50 = lag0["float_informational"]["ratio_p50"] if lag0 is not None else 1.0
+        median_moved = abs(p50 - 1.0) > cfg.median_band
+        if new_generation and ratio > cfg.stale_server_factor and median_moved:
             alarms.append(Alarm("stale_server", "error", diag.step,
                                 f"lag-0 floor jumped {ratio:.1f}x right after a new generation (floor {floor:.2e}, "
-                                f"trailing median {med:.2e}). PROXY: tokens the trainer believes are fresh disagree "
-                                "with it as if they were stale; the inference server may be serving old weights "
-                                "(failed or lagging sync).",
-                                {"floor": floor, "trailing_median": med, "factor": ratio}))
+                                f"trailing median {med:.2e}) and the median ratio moved to {p50:.4f}. PROXY: tokens "
+                                "the trainer believes are fresh disagree with it on ordinary tokens; the inference "
+                                "engine may be serving old weights (failed or lagging sync).",
+                                {"floor": floor, "trailing_median": med, "factor": ratio, "ratio_p50": p50}))
+        elif new_generation and ratio > cfg.stale_server_factor:
+            alarms.append(Alarm("floor_tail", "warn", diag.step,
+                                f"lag-0 floor jumped {ratio:.1f}x after a new generation but the median ratio is "
+                                f"{p50:.4f}: a few low-probability tokens disagree by nats (bf16-vs-fp32 tail effect, "
+                                "worse at temperature 1 and as the policy sharpens). Not a stale server. Consider FP16, "
+                                "a bit-exact engine, or masking tail ratios.",
+                                {"floor": floor, "trailing_median": med, "factor": ratio, "ratio_p50": p50}))
         elif ratio > cfg.floor_jump_factor:
             alarms.append(Alarm("floor_jump", "warn", diag.step,
                                 f"lag-0 floor is {ratio:.1f}x its trailing median ({floor:.2e} vs {med:.2e}): engine "

@@ -137,3 +137,30 @@ class TestAttribution:
             r = CliRunner().invoke(cli, [cmd, "--dir", str(tmp_path / "ws")])
             assert r.exit_code == 0, r.output
             assert "is staleness and" in r.output
+
+
+class TestTailVersusShift:
+    def test_tail_dominated_floor_is_named_as_numerics(self, tmp_path):
+        from martingale.diagnostics.staleness import tail_dominated
+        rec = Recorder(tmp_path / "ws")
+        r = rec.publish_revision("1" * 64, TOK, S, step=0)
+        with rec.sequence(0, "a", [1]) as a:
+            for i in range(40):
+                a.token(r.digest, i, -0.01)
+        lps = [-0.01] * 40
+        lps[3] = -9.0                                     # one tail token disagrees by nine nats
+        rec.score(a.record.digest, r.digest, lps)
+        d = decompose(rec.ledger)
+        assert tail_dominated(d["lag0_floor"]["float_informational"])
+        lines = diagnosis(d)
+        assert any("low-probability tokens" in line and "Not a stale server" in line for line in lines)
+
+    def test_shifted_floor_is_named_as_stale_or_config(self, tmp_path):
+        rec = Recorder(tmp_path / "ws")
+        r = rec.publish_revision("1" * 64, TOK, S, step=0)
+        with rec.sequence(0, "a", [1]) as a:
+            for i in range(40):
+                a.token(r.digest, i, -0.5)
+        rec.score(a.record.digest, r.digest, [-0.8] * 40)   # every token shifted
+        lines = diagnosis(decompose(rec.ledger))
+        assert any("ordinary tokens" in line for line in lines)

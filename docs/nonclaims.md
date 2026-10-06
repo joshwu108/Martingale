@@ -67,12 +67,14 @@ Every result is scoped to the constraints below.
   out of band, a forger who re-signs a whole chain, deletes the last sequence
   of an actor, or drops an unreferenced revision is not detected
   (`results/mutation_tokens_report.json`, column `rejected_unanchored`).
-- **The TRL integration has been exercised only against a fake trainer**
-  (`tests/test_trl_integration.py`). The Modal runner
-  (`benchmarks/modal/trl_grpo_vllm.py`) that would produce a real vLLM + TRL
-  record has been written but not run (2026-10-06). Row matching between
-  generation and update is by (prompt ids, completion ids); duplicate rows in
-  one batch map to the first.
+- **The TRL integration has run twice for real** (2026-10-06, Qwen2.5-0.5B,
+  TRL 1.13, vLLM 0.28, 16 steps each; `benchmarks/modal/results/`), once in
+  colocate mode and once in server mode. The adapter version that ran had two
+  bugs (second `num_iterations` pass not scored; database copied before the
+  WAL checkpoint), fixed the same day and covered by tests, but not yet re-run.
+  TRL's server mode on Modal hangs in the NCCL weight-transfer handshake more
+  often than not (one success in four attempts here, zero in Reservoir's
+  eleven probes); colocate mode is the recommended path.
 - No distributed-filesystem, multi-host, or performance claims for the record.
   Volume: about 250 bytes per token in JSON, less in SQLite; no compression
   or sampling of sequences is implemented. The diagnostics keep one float per
@@ -106,4 +108,7 @@ Every result is scoped to the constraints below.
   different fault.
 - Percentiles in the live diagnosis come from a bounded reservoir (4096 ratios
   per lag bucket); means, maxima and shares are exact.
-- The monitor has been exercised against a fake trainer only.
+- The monitor ran on the two real runs. Its `stale_server` alarm fired on
+  floor jumps that the median ratio shows were tail tokens; the alarm now
+  requires the median to move, and `floor_tail` covers the tail case. Both
+  thresholds (`median_band`, `stale_server_factor`) are heuristics.

@@ -106,7 +106,11 @@ class Recorder:
 
     def score(self, sequence_digest: str, train_revision_digest: str,
               logprobs: Sequence[float], dtype: str = "f32") -> list[ScoreRecord]:
-        """Record the trainer's log-prob for every recorded token of a sequence, chained."""
+        """Record the trainer's log-prob for every recorded token of a sequence, chained.
+        A sequence already scored under this train revision is not scored again (gradient
+        accumulation re-runs the loss on the same rows under the same weights); returns []."""
+        if self.ledger.has_scores(sequence_digest, train_revision_digest):
+            return []
         prev = self.ledger.last_score_digest(sequence_digest)
         records: list[ScoreRecord] = []
         for pos, lp in enumerate(logprobs):

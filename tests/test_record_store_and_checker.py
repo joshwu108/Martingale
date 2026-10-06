@@ -73,7 +73,20 @@ class TestRecorder:
     def test_score_outside_sequence_refused(self, rec):
         r1, r2, seqs = _run(rec, n_seq=1)
         with pytest.raises(ValueError, match="outside"):
-            rec.score(seqs[0].digest, r2.digest, [-0.1, -0.2, -0.3])
+            rec.score(seqs[0].digest, r1.digest, [-0.1, -0.2, -0.3])
+
+    def test_rescoring_under_same_revision_is_a_no_op(self, rec):
+        r1, r2, seqs = _run(rec, n_seq=1)
+        assert rec.score(seqs[0].digest, r2.digest, [-0.4, -1.6]) == []
+        assert len(rec.ledger.scores_for(seqs[0].digest)) == 2
+
+    def test_wal_checkpoint_makes_main_file_self_contained(self, rec, tmp_path):
+        import shutil
+        _run(rec, n_seq=2)
+        rec.ledger.checkpoint_wal()
+        shutil.copy(rec.workspace / "tokens.db", tmp_path / "copy.db")
+        from martingale.record import TokenLedger
+        assert TokenLedger(tmp_path / "copy.db").count_sequences() == 2
 
     def test_reopen_continues_chain(self, tmp_path):
         rec = Recorder(tmp_path / "ws")

@@ -8,11 +8,17 @@ What it produces (under benchmarks/modal/results/<run>/):
   head.txt              the ledger head printed by the trainer (the out-of-band anchor)
   trainer_log.json      TRL's log history
 
-Setup (mirrors Reservoir's working vLLM tier, 2026-10-05):
-  model   Qwen/Qwen2.5-0.5B-Instruct, trainer in float32, server serves bf16
-  GPU     A10G:2 (GPU 0 trains, GPU 1 serves); TRL 1.13.0, vLLM 0.28.0
-  TRL     use_vllm=True, vllm_mode="server", vllm_importance_sampling_correction=False
+Setup:
+  model   Qwen/Qwen2.5-0.5B-Instruct, trainer in float32, vLLM serves bf16 in-process
+  GPU     one A10G; TRL 1.13.0, vLLM 0.28.0
+  TRL     use_vllm=True, vllm_mode="colocate", vllm_importance_sampling_correction=False
           (the loss never reads sampling logprobs; the recorder still records them)
+  Why colocate, not server: TRL's server mode pushes weights over NCCL between two
+  single-GPU-masked processes, and on Modal that handshake hangs in ncclCommInitRank.
+  Reservoir probed eleven NCCL environments on 2026-10-06 (benchmarks/modal/nccl_probe.py
+  there); every one hung, and this project's first attempts hung the same way. Colocate
+  runs vLLM inside the trainer process and loads weights in-process, so there is no
+  handshake. The lag-0 floor still measures vLLM's kernels against the trainer's forward.
   lag     num_iterations=2 and steps_per_generation=2 make each generation batch
           train over several optimizer steps, so the record contains lag 0, 1, 2, 3
           tokens; lag 0 is the vLLM-vs-trainer mismatch floor.
@@ -20,9 +26,10 @@ Setup (mirrors Reservoir's working vLLM tier, 2026-10-05):
 
 Usage
   pip install modal && modal setup                            # once
-  modal run benchmarks/modal/trl_grpo_vllm.py                 # default engine, temperature 1.0
+  modal run benchmarks/modal/trl_grpo_vllm.py                 # ~10 min on one A10G, about a dollar
   modal run benchmarks/modal/trl_grpo_vllm.py --temperature 0.7
-  modal run benchmarks/modal/trl_grpo_vllm.py --batch-invariant   # deterministic vLLM kernels: is the floor smaller?
+  modal run benchmarks/modal/trl_grpo_vllm.py --batch-invariant   # deterministic vLLM kernels (colocate: the
+                                                                   # override also hits the trainer's backward; may fail)
   modal run benchmarks/modal/trl_grpo_vllm.py --max-steps 24
 
 Not run yet by the author (needs Modal credentials and a GPU budget); the
@@ -32,20 +39,13 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
-import sys
-import time
-import urllib.error
-import urllib.request
 from pathlib import Path
 
 import modal
 
 VLLM_VERSION = os.environ.get("MARTINGALE_VLLM_VERSION", "0.28.0")
 MODEL_ID = "Qwen/Qwen2.5-0.5B-Instruct"
-GPU = "A10G:2"
-SERVER_HOST, SERVER_PORT, GROUP_PORT = "127.0.0.1", 8000, 51216
-SERVER_START_TIMEOUT_S = 900.0
+GPU = "A10G"
 RESULTS_DIR = Path(__file__).parent / "results"
 # Modal re-imports this file as /root/trl_grpo_vllm.py inside the container, where it has
 # no repo above it; the mounts below only matter locally, at image-definition time.
@@ -86,33 +86,28 @@ def exact_match_reward(completions, answer, **kwargs):
     return out
 
 
-def _start_vllm_server(log_path: Path, batch_invariant: bool) -> subprocess.Popen:
-    """Launch vLLM the way `trl vllm-serve` does on TRL 1.13 (Reservoir's working recipe, 2026-10-05):
-    plain `vllm serve` with the NCCL weight-transfer engine the trainer pushes weights through,
-    processed log-probs (what TRL's client expects) and dev-mode endpoints."""
-    env = {**os.environ, "CUDA_VISIBLE_DEVICES": "1", "VLLM_SERVER_DEV_MODE": "1",
-           "VLLM_WORKER_MULTIPROC_METHOD": "spawn", "NCCL_DEBUG": "WARN"}
-    if batch_invariant:
-        env["VLLM_BATCH_INVARIANT"] = "1"      # inference-only deterministic kernels; server process only
-    cmd = [sys.executable, "-m", "vllm.entrypoints.cli.main", "serve", MODEL_ID,
-           "--host", SERVER_HOST, "--port", str(SERVER_PORT),
-           "--gpu-memory-utilization", "0.5", "--max-model-len", "1024", "--dtype", "bfloat16",
-           "--enforce-eager", "--weight-transfer-config", json.dumps({"backend": "nccl"}),
-           "--logprobs-mode", "processed_logprobs", "--max-logprobs", "-1",
-           "--uvicorn-log-level", "warning"]
-    log = open(log_path, "wb")
-    proc = subprocess.Popen(cmd, env=env, stdout=log, stderr=subprocess.STDOUT)
-    deadline = time.time() + SERVER_START_TIMEOUT_S
-    while time.time() < deadline:
-        if proc.poll() is not None:
-            raise RuntimeError(f"vLLM server exited early; see {log_path}")
-        try:
-            with urllib.request.urlopen(f"http://{SERVER_HOST}:{SERVER_PORT}/health", timeout=5) as r:
-                if r.status == 200:
-                    return proc
-        except (urllib.error.URLError, ConnectionError, TimeoutError):
-            time.sleep(5)
-    raise TimeoutError("vLLM server did not become healthy")
+def _worst_tokens(ledger, tokenizer, n: int = 40) -> list[dict]:
+    """The n scored tokens with the largest |trainer - behavior| log-prob, with decoded context,
+    so a large floor can be read: tail tokens on a peaked distribution (numerics) or common
+    tokens (sync/alignment)."""
+    from martingale.record import bits_to_fraction
+    revs = {r.digest: r for r in ledger.all_revisions()}
+    rows = []
+    for seq in ledger.all_sequences():
+        comp = [t.token_id for t in seq.tokens]
+        for sc in ledger.scores_for(seq.digest):
+            t = seq.tokens[sc.position]
+            b = float(bits_to_fraction(t.logprob_bits))
+            tr = float(bits_to_fraction(sc.logprob_bits))
+            rows.append({
+                "sequence_id": seq.sequence_id, "position": sc.position, "token_id": t.token_id,
+                "token": tokenizer.decode([t.token_id]), "completion": tokenizer.decode(comp),
+                "lag": revs[sc.train_revision_digest].step - revs[t.revision_digest].step,
+                "behavior_logprob": b, "trainer_logprob": tr, "log_ratio": tr - b,
+                "completion_length": len(comp),
+            })
+    rows.sort(key=lambda r: -abs(r["log_ratio"]))
+    return rows[:n]
 
 
 @app.function(image=image, gpu=GPU, timeout=60 * 60, volumes={"/hf_cache": hf_cache})
@@ -127,42 +122,45 @@ def run_grpo(max_steps: int = 16, seed: int = 0, temperature: float = 1.0, batch
 
     work = Path("/tmp/martingale_run")
     work.mkdir(parents=True, exist_ok=True)
-    server = _start_vllm_server(work / "vllm_server.log", batch_invariant)
-    try:
-        os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-        os.environ["NCCL_DEBUG"] = "WARN"
-        tok = AutoTokenizer.from_pretrained(MODEL_ID)
-        model = AutoModelForCausalLM.from_pretrained(MODEL_ID, torch_dtype=torch.float32)
-        flight = MartingaleRecorder(str(work / "ws"), tokenizer=tok, sampler_overrides={
-            "engine_version": f"vllm {VLLM_VERSION} processed_logprobs"
-                              + (" batch_invariant" if batch_invariant else "")})
-        args = GRPOConfig(
-            output_dir=str(work / "out"), seed=seed, max_steps=max_steps, logging_steps=1,
-            per_device_train_batch_size=8, gradient_accumulation_steps=1, num_generations=8,
-            max_completion_length=16, max_prompt_length=64, temperature=temperature, learning_rate=5e-6,
-            num_iterations=2, steps_per_generation=2, report_to=[], save_strategy="no", bf16=False,
-            use_vllm=True, vllm_mode="server", vllm_server_base_url=f"http://{SERVER_HOST}:{SERVER_PORT}",
-            vllm_group_port=GROUP_PORT, vllm_server_timeout=120.0, vllm_importance_sampling_correction=False,
-        )
-        Trainer = build_trainer_class()
-        trainer = Trainer(model=model, args=args, train_dataset=_addition_dataset(512, seed),
-                          reward_funcs=exact_match_reward, processing_class=tok, flight_recorder=flight)
-        trainer.train()
-        head = flight.head()
-        print(f"MARTINGALE_LEDGER_HEAD {head}")
-        export = flight.recorder.export_for_checker(work / "export")
-        verify = verify_export(export, expected_head=head)
-        report = decompose(flight.recorder.ledger)
-        return {
-            "head": head, "verify": verify, "report": report, "report_md": render_markdown(report),
-            "stats": flight.stats, "log_history": trainer.state.log_history,
-            "tokens_db": (work / "ws" / "tokens.db").read_bytes(),
-            "config": {"model": MODEL_ID, "vllm": VLLM_VERSION, "trl": "1.13.0", "gpu": GPU,
-                       "max_steps": max_steps, "seed": seed, "temperature": temperature,
-                       "batch_invariant": batch_invariant, "num_iterations": 2, "steps_per_generation": 2},
-        }
-    finally:
-        server.terminate()
+    if batch_invariant:
+        os.environ["VLLM_BATCH_INVARIANT"] = "1"
+    tok = AutoTokenizer.from_pretrained(MODEL_ID)
+    model = AutoModelForCausalLM.from_pretrained(MODEL_ID, torch_dtype=torch.float32)
+    flight = MartingaleRecorder(str(work / "ws"), tokenizer=tok, sampler_overrides={
+        "engine_version": f"vllm {VLLM_VERSION} colocate" + (" batch_invariant" if batch_invariant else "")})
+    args = GRPOConfig(
+        output_dir=str(work / "out"), seed=seed, max_steps=max_steps, logging_steps=1,
+        per_device_train_batch_size=8, gradient_accumulation_steps=1, num_generations=8,
+        max_completion_length=16, temperature=temperature, learning_rate=5e-6,
+        num_iterations=2, steps_per_generation=2, report_to=[], save_strategy="no", bf16=False,
+        use_vllm=True, vllm_mode="colocate", vllm_gpu_memory_utilization=0.3, vllm_max_model_length=512,
+        vllm_importance_sampling_correction=False,
+    )
+    Trainer = build_trainer_class()
+    trainer = Trainer(model=model, args=args, train_dataset=_addition_dataset(512, seed),
+                      reward_funcs=exact_match_reward, processing_class=tok, flight_recorder=flight,
+                      halt_on_error=False)       # first real run: record alarms, never lose the data to one
+    trainer.train()
+    monitor = trainer.martingale_monitor
+    alarms = [{"kind": a.kind, "level": a.level, "step": a.step, "message": a.message, "evidence": a.evidence}
+              for a in monitor.alarms]
+    per_step = [d.metrics() for d in monitor.diagnoses]
+    head = flight.head()
+    print(f"MARTINGALE_LEDGER_HEAD {head}")
+    worst = _worst_tokens(flight.recorder.ledger, tok, n=40)
+    flight.recorder.ledger.checkpoint_wal()      # tokens.db alone must hold everything before it is copied
+    export = flight.recorder.export_for_checker(work / "export")
+    verify = verify_export(export, expected_head=head)
+    report = decompose(flight.recorder.ledger)
+    return {
+        "head": head, "verify": verify, "report": report, "report_md": render_markdown(report),
+        "stats": flight.stats, "log_history": trainer.state.log_history,
+        "alarms": alarms, "per_step_metrics": per_step, "worst_tokens": worst,
+        "tokens_db": (work / "ws" / "tokens.db").read_bytes(),
+        "config": {"model": MODEL_ID, "vllm": VLLM_VERSION, "trl": "1.13.0", "gpu": GPU, "vllm_mode": "colocate",
+                   "max_steps": max_steps, "seed": seed, "temperature": temperature,
+                   "batch_invariant": batch_invariant, "num_iterations": 2, "steps_per_generation": 2},
+    }
 
 
 @app.local_entrypoint()
@@ -177,7 +175,9 @@ def main(max_steps: int = 16, seed: int = 0, temperature: float = 1.0, batch_inv
     (out / "verify.json").write_text(json.dumps(res["verify"], indent=1))
     (out / "report.json").write_text(json.dumps(res["report"], indent=1))
     (out / "trainer_log.json").write_text(json.dumps(res["log_history"], indent=1))
+    (out / "alarms.json").write_text(json.dumps({"alarms": res["alarms"], "per_step_metrics": res["per_step_metrics"]}, indent=1))
+    (out / "worst_tokens.json").write_text(json.dumps(res["worst_tokens"], indent=1))
     (out / "config.json").write_text(json.dumps({**res["config"], "stats": res["stats"]}, indent=1))
     print((out / "report.md").read_text())
-    print("verify ok:", res["verify"]["ok"], "| head:", res["head"])
+    print("verify ok:", res["verify"]["ok"], "| head:", res["head"], "| alarms:", len(res["alarms"]))
     print("results in", out)

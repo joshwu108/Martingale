@@ -241,15 +241,19 @@ class MartingaleRecorder:
     # ---- scores -------------------------------------------------------------------
 
     def _lookup(self, row_id: int | None, key: tuple) -> str | None:
-        """Row id first (exact); else content FIFO so duplicate rows score once each."""
+        """Row id first (exact, reusable: TRL scores the same row once per iteration and per
+        optimizer step, each under a different revision); else content, round-robin over
+        duplicates so identical rows in one batch map to distinct sequences."""
         for by_id, by_content in reversed(self._generations):
             if row_id is not None:
                 if row_id in by_id:
-                    return by_id.pop(row_id)
+                    return by_id[row_id]
                 continue
             lst = by_content.get(key)
             if lst:
-                return lst.pop(0)
+                digest = lst.pop(0)
+                lst.append(digest)
+                return digest
         return None
 
     def on_scores(self, input_ids: torch.Tensor, attention_mask: torch.Tensor, logits_to_keep: int,
@@ -276,7 +280,10 @@ class MartingaleRecorder:
                 continue
             if rev is None:
                 rev = self.revision_for(trainer, "trainer_scores")
-            self.recorder.score(digest, rev.digest, lp[r][:clen[r]], dtype=self._dtype)
+            written = self.recorder.score(digest, rev.digest, lp[r][:clen[r]], dtype=self._dtype)
+            if not written:                       # same row, same weights: gradient accumulation
+                self.stats["duplicate_scores"] = self.stats.get("duplicate_scores", 0) + 1
+                continue
             self.stats["scored_tokens"] += clen[r]
             matched += 1
         return matched

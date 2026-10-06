@@ -208,9 +208,9 @@ class TestReviewFindings:
             out[k] = torch.cat([out[k][1:2], out[k][1:2]], dim=0)
         out = flight.on_generation(out, tr)
         ids, am, keep = self._loss_batch(out)
-        assert flight.on_scores(ids, am, keep, torch.zeros(2, 3), tr) == 2       # no IntegrityError
-        assert flight.on_scores(ids, am, keep, torch.zeros(2, 3), tr) == 0       # FIFO exhausted: unmatched, not crashed
-        assert flight.stats["unmatched_rows"] == 2
+        assert flight.on_scores(ids, am, keep, torch.zeros(2, 3), tr) == 2       # two distinct sequences, no IntegrityError
+        assert flight.on_scores(ids, am, keep, torch.zeros(2, 3), tr) == 0       # same weights again: duplicates, not errors
+        assert flight.stats["unmatched_rows"] == 0 and flight.stats["duplicate_scores"] == 2
 
     def test_row_ids_survive_a_shuffle(self, flight):
         tr = FakeTrainer()
@@ -304,3 +304,34 @@ class TestReviewFindings:
         tr.model.weight = nn.Parameter(torch.empty(0, 3))
         with pytest.raises(RuntimeError, match="sharded"):
             flight.on_generation(make_output(), tr)
+
+
+class TestRealRunFindings:
+    """2026-10-06 first vLLM run: num_iterations=2 re-scores every row; the lookup must not consume ids."""
+
+    def _loss_batch(self, out):
+        ids = torch.cat([out["prompt_ids"], out["completion_ids"]], dim=1)
+        am = torch.cat([out["prompt_mask"], out["completion_mask"]], dim=1)
+        return ids, am, out["completion_ids"].size(1)
+
+    def test_same_rows_scored_again_at_a_later_step_are_matched(self, flight):
+        tr = FakeTrainer()
+        out = flight.on_generation(make_output(), tr)
+        ids, am, keep = self._loss_batch(out)
+        assert flight.on_scores(ids, am, keep, torch.zeros(2, 3), tr, row_ids=out["martingale_row_id"]) == 2
+        tr.state.global_step = 1
+        with torch.no_grad():
+            tr.model.weight.add_(1.0)
+        assert flight.on_scores(ids, am, keep, torch.zeros(2, 3), tr, row_ids=out["martingale_row_id"]) == 2
+        assert flight.stats["unmatched_rows"] == 0
+        d = decompose(flight.recorder.ledger)
+        assert d["staleness_histogram"] == {"0": 5, "1": 5}
+
+    def test_same_rows_same_revision_scored_once(self, flight):
+        tr = FakeTrainer()
+        out = flight.on_generation(make_output(), tr)
+        ids, am, keep = self._loss_batch(out)
+        flight.on_scores(ids, am, keep, torch.zeros(2, 3), tr, row_ids=out["martingale_row_id"])
+        flight.on_scores(ids, am, keep, torch.zeros(2, 3), tr, row_ids=out["martingale_row_id"])   # grad accumulation
+        seqs = list(flight.recorder.ledger.all_sequences())
+        assert len(flight.recorder.ledger.scores_for(seqs[0].digest)) == 2                   # not 4
