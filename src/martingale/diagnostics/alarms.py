@@ -8,13 +8,16 @@ checked. Two alarms are deliberately distinct:
   weights_unchanged  the TRAINER's weights digest did not change across an
                      optimizer step (broken optimizer, lr 0, frozen model) —
                      exact, from the record.
-  stale_server       the lag-0 engine floor jumped after a new generation AND
-                     the median ratio moved — a PROXY for the inference server
-                     serving old weights, because the record holds the
-                     trainer's digest, not the server's. The message says so.
-  floor_tail         the floor jumped but the median ratio stayed at 1: a few
-                     low-probability tokens disagree by nats (the bf16-vs-fp32
-                     tail effect seen on the first real run, 2026-10-06). Warn.
+  stale_server       a lag-0 token the engine was >= 50% sure of that the
+                     trainer scores > 2 nats lower. Numerics cannot do that;
+                     different weights (sync not applied) or inputs can. Found
+                     on the first real run: TRL 1.13 colocate served the initial
+                     weights for three generations while the trainer trained,
+                     and the median ratio stayed at 1 the whole time (a
+                     near-deterministic task agrees on most tokens whatever
+                     the weights), so a median-based proxy was wrong.
+  floor_tail         the floor jumped with no confident disagreement: a few
+                     low-probability tokens disagree by nats (bf16 tails).
 """
 from __future__ import annotations
 
@@ -36,7 +39,8 @@ class AlarmConfig:
     span_max_fraction: float = 0.05  # fraction of new sequences spanning > 2 revisions
     unmatched_max_fraction: float = 0.01
     min_floor_tokens: int = 32      # ignore floor estimates from fewer lag-0 tokens
-    median_band: float = 0.02       # |ratio_p50 - 1| beyond this means the whole distribution shifted, not just tails
+    median_band: float = 0.02       # informational: |ratio_p50 - 1| beyond this means the distribution shifted
+    confident_min_tokens: int = 1   # confident disagreements at lag 0 that make the stale-engine verdict (exact criterion)
 
 
 @dataclass(frozen=True)
@@ -84,26 +88,31 @@ def evaluate(diag: StepDiagnosis, history: AlarmHistory, cfg: AlarmConfig = Alar
                             "(frozen model, lr 0, or a broken optimizer)",
                             {"weights_digest": diag.new_weights_digests[0], "previous_step": history.last_generation_step}))
 
-    # floor jump / stale server proxy
+    # stale engine: a token the engine was >= 50% sure of that the trainer scores > 2 nats lower.
+    # bf16 rounding cannot do that; different weights (sync did not apply) or different inputs can.
+    # Found on the first real run (2026-10-06): TRL 1.13 colocate served the initial weights for
+    # three generations while the trainer trained; the median ratio stayed at 1 the whole time.
+    n_conf = lag0.get("n_confident_disagreements", 0) if lag0 is not None else 0
+    if n_conf >= cfg.confident_min_tokens:
+        alarms.append(Alarm("stale_server", "error", diag.step,
+                            f"{n_conf} lag-0 tokens the engine was >=50% sure of are scored >2 nats lower by the "
+                            "trainer: the engine generated from different weights than the trainer scored with "
+                            "(weight sync not applied?) or from a different input. Verify with `martingale recompute` "
+                            "against the trainer's checkpoint.",
+                            {"n_confident_disagreements": n_conf, "floor": floor}))
+
+    # floor jump: tail numerics or an engine config change (never alone a stale-server verdict)
     if floor_ok and med is not None and med > 0:
         ratio = floor / med
         p50 = lag0["float_informational"]["ratio_p50"] if lag0 is not None else 1.0
-        median_moved = abs(p50 - 1.0) > cfg.median_band
-        if new_generation and ratio > cfg.stale_server_factor and median_moved:
-            alarms.append(Alarm("stale_server", "error", diag.step,
-                                f"lag-0 floor jumped {ratio:.1f}x right after a new generation (floor {floor:.2e}, "
-                                f"trailing median {med:.2e}) and the median ratio moved to {p50:.4f}. PROXY: tokens "
-                                "the trainer believes are fresh disagree with it on ordinary tokens; the inference "
-                                "engine may be serving old weights (failed or lagging sync).",
-                                {"floor": floor, "trailing_median": med, "factor": ratio, "ratio_p50": p50}))
-        elif new_generation and ratio > cfg.stale_server_factor:
+        if new_generation and ratio > cfg.stale_server_factor and n_conf < cfg.confident_min_tokens:
             alarms.append(Alarm("floor_tail", "warn", diag.step,
-                                f"lag-0 floor jumped {ratio:.1f}x after a new generation but the median ratio is "
-                                f"{p50:.4f}: a few low-probability tokens disagree by nats (bf16-vs-fp32 tail effect, "
-                                "worse at temperature 1 and as the policy sharpens). Not a stale server. Consider FP16, "
-                                "a bit-exact engine, or masking tail ratios.",
+                                f"lag-0 floor jumped {ratio:.1f}x after a new generation with the median ratio at "
+                                f"{p50:.4f} and no confident disagreements: low-probability tokens disagree by nats "
+                                "(bf16-vs-fp32 tail effect, worse at temperature 1 and as the policy sharpens). "
+                                "Consider FP16, a bit-exact engine, or masking tail ratios.",
                                 {"floor": floor, "trailing_median": med, "factor": ratio, "ratio_p50": p50}))
-        elif ratio > cfg.floor_jump_factor:
+        elif ratio > cfg.floor_jump_factor and n_conf < cfg.confident_min_tokens:
             alarms.append(Alarm("floor_jump", "warn", diag.step,
                                 f"lag-0 floor is {ratio:.1f}x its trailing median ({floor:.2e} vs {med:.2e}): engine "
                                 "config, dtype or server settings may have changed",

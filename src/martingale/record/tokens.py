@@ -93,10 +93,15 @@ class SequenceRecord:
     prev_sequence_digest: str
     reward_bits: str | None = None
     engine_request_id: str | None = None   # outside the digest
+    prompt_ids: tuple[int, ...] | None = None   # outside the digest; must hash to prompt_digest when present
     digest: str = field(init=False)
 
     def __post_init__(self) -> None:
         _check_hex("prompt_digest", self.prompt_digest)
+        if self.prompt_ids is not None:
+            object.__setattr__(self, "prompt_ids", tuple(int(t) for t in self.prompt_ids))
+            if prompt_digest(self.prompt_ids) != self.prompt_digest or len(self.prompt_ids) != self.prompt_len:
+                raise ValueError("prompt_ids do not match prompt_digest / prompt_len")
         _check_hex("prev_sequence_digest", self.prev_sequence_digest)
         _check_int("actor_id", self.actor_id)
         _check_int("sequence_index", self.sequence_index)
@@ -146,6 +151,7 @@ class SequenceRecord:
         d = self.canonical()
         d["digest"] = self.digest
         d["engine_request_id"] = self.engine_request_id
+        d["prompt_ids"] = None if self.prompt_ids is None else list(self.prompt_ids)
         d["tokens"] = [t.to_dict() for t in self.tokens]
         return d
 
@@ -156,7 +162,8 @@ class SequenceRecord:
                   prompt_len=int(d["prompt_len"]),
                   tokens=tuple(TokenRecord.from_dict(t) for t in d["tokens"]),
                   prev_sequence_digest=d["prev_sequence_digest"],
-                  reward_bits=d.get("reward_bits"), engine_request_id=d.get("engine_request_id"))
+                  reward_bits=d.get("reward_bits"), engine_request_id=d.get("engine_request_id"),
+                  prompt_ids=None if d.get("prompt_ids") is None else tuple(d["prompt_ids"]))
         if "digest" in d and d["digest"] != rec.digest:
             raise ValueError("sequence record digest mismatch")
         return rec
@@ -204,7 +211,7 @@ def build_sequence(
     actor_id: int, sequence_index: int, sequence_id: str, prompt_ids: Sequence[int],
     steps: Sequence[tuple[str, int, str, tuple[tuple[int, str], ...] | None]],
     prev_sequence_digest: str = GENESIS_DIGEST, reward_bits: str | None = None,
-    engine_request_id: str | None = None,
+    engine_request_id: str | None = None, keep_prompt_ids: bool = True,
 ) -> SequenceRecord:
     """Chain (revision_digest, token_id, logprob_bits, topk) steps into a SequenceRecord."""
     tokens: list[TokenRecord] = []
@@ -217,4 +224,5 @@ def build_sequence(
     return SequenceRecord(actor_id=actor_id, sequence_index=sequence_index, sequence_id=sequence_id,
                           prompt_digest=prompt_digest(prompt_ids), prompt_len=len(prompt_ids),
                           tokens=tuple(tokens), prev_sequence_digest=prev_sequence_digest,
-                          reward_bits=reward_bits, engine_request_id=engine_request_id)
+                          reward_bits=reward_bits, engine_request_id=engine_request_id,
+                          prompt_ids=tuple(int(t) for t in prompt_ids) if keep_prompt_ids else None)

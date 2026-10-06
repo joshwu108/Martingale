@@ -69,12 +69,16 @@ class SequenceBuilder:
             sequence_id=self._sequence_id, prompt_ids=self._prompt_ids, steps=self._steps,
             prev_sequence_digest=ledger.last_sequence_digest(self._actor_id),
             reward_bits=self._reward_bits, engine_request_id=self._engine_request_id,
+            keep_prompt_ids=self._rec.keep_prompt_ids,
         )
         self.record = ledger.append_sequence(seq)
 
 
 class Recorder:
-    def __init__(self, workspace: Path | str, db_name: str = "tokens.db") -> None:
+    def __init__(self, workspace: Path | str, db_name: str = "tokens.db", keep_prompt_ids: bool = True) -> None:
+        """`keep_prompt_ids=True` stores prompt token ids next to the digest so `martingale recompute`
+        can re-score the record with a reference model; set False to keep prompts out of the record."""
+        self.keep_prompt_ids = keep_prompt_ids
         self.workspace = Path(workspace)
         self.workspace.mkdir(parents=True, exist_ok=True)
         self.ledger = TokenLedger(self.workspace / db_name)

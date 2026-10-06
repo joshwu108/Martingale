@@ -108,7 +108,12 @@ Every result is scoped to the constraints below.
   different fault.
 - Percentiles in the live diagnosis come from a bounded reservoir (4096 ratios
   per lag bucket); means, maxima and shares are exact.
-- The monitor ran on the two real runs. Its `stale_server` alarm fired on
-  floor jumps that the median ratio shows were tail tokens; the alarm now
-  requires the median to move, and `floor_tail` covers the tail case. Both
-  thresholds (`median_band`, `stale_server_factor`) are heuristics.
+- The monitor ran on three real runs. `stale_server` now fires on confident
+  disagreement (engine >= 50% sure, trainer > 2 nats lower at lag 0), which
+  bf16 rounding cannot produce; the thresholds (ln 0.5, 2 nats) are chosen
+  for that reason, not fitted. It says the engine used different weights or
+  inputs; it does not say why. `martingale recompute` needs a checkpoint and
+  the prompt ids in the record (stored by default, outside the digest).
+- The stale-engine finding on TRL 1.13 colocate + vLLM 0.28 is one model,
+  one seed, one version pair; the mechanism inside TRL's weight sync has not
+  been diagnosed.

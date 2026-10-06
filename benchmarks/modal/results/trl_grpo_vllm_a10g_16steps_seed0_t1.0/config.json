@@ -15,9 +15,9 @@
   "sequences": 64,
   "tokens": 240,
   "score_calls": 16,
-  "scored_tokens": 240,
-  "unmatched_rows": 64,
+  "scored_tokens": 480,
+  "unmatched_rows": 0,
   "nan_rows": 0,
-  "revisions": 12
+  "revisions": 20
  }
 }

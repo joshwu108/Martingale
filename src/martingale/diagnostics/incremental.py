@@ -15,7 +15,7 @@ import math
 from dataclasses import dataclass, field
 from fractions import Fraction
 
-from martingale.diagnostics.staleness import DEFAULT_EPS, MAX_EXP, _fs, _pct
+from martingale.diagnostics.staleness import CONFIDENT_GAP, CONFIDENT_LOGPROB, DEFAULT_EPS, MAX_EXP, _fs, _pct
 from martingale.record.bits import bits_to_fraction
 from martingale.record.store import TokenLedger
 from martingale.record.tokens import SequenceRecord
@@ -28,6 +28,7 @@ class RunningBucket:
     lag: int
     n_tokens: int = 0
     n_overflow: int = 0
+    n_confident_disagreements: int = 0
     sum_log_ratio: Fraction = Fraction(0)
     sum_abs_log_ratio: Fraction = Fraction(0)
     max_abs_log_ratio: Fraction = Fraction(0)
@@ -39,8 +40,11 @@ class RunningBucket:
     mixed_sequences: set = field(default_factory=set)
     size: int = RESERVOIR_SIZE
 
-    def add(self, seq_digest: str, position: int, log_ratio: Fraction, mixed: bool, eps: tuple[float, ...]) -> None:
+    def add(self, seq_digest: str, position: int, log_ratio: Fraction, mixed: bool, eps: tuple[float, ...],
+            behavior_logprob: Fraction | None = None) -> None:
         self.n_tokens += 1
+        if behavior_logprob is not None and behavior_logprob > CONFIDENT_LOGPROB and log_ratio < -CONFIDENT_GAP:
+            self.n_confident_disagreements += 1
         self.sum_log_ratio += log_ratio
         self.sum_abs_log_ratio += abs(log_ratio)
         self.max_abs_log_ratio = max(self.max_abs_log_ratio, abs(log_ratio))
@@ -81,6 +85,7 @@ class RunningBucket:
         return {
             "lag": self.lag, "n_tokens": n, "n_sequences": len(self.sequences),
             "n_mixed_sequences": len(self.mixed_sequences), "n_overflow_tokens": self.n_overflow,
+            "n_confident_disagreements": self.n_confident_disagreements,
             "mean_log_ratio": _fs(mean), "mean_abs_log_ratio": _fs(mean_abs), "max_abs_log_ratio": _fs(self.max_abs_log_ratio),
             "float_informational": {
                 "mean_log_ratio": float(mean), "mean_abs_log_ratio": float(mean_abs),
@@ -120,6 +125,8 @@ class StepDiagnosis:
             out[prefix + "floor_mean_abs_log_ratio"] = float(self.floor_mean_abs)
         for b in self.by_lag:
             f = b["float_informational"]
+            if b["lag"] == 0:
+                out[prefix + "confident_disagreements_lag0"] = float(b.get("n_confident_disagreements", 0))
             out[prefix + f"ess_fraction_lag{b['lag']}"] = f["ess_fraction"]
             out[prefix + f"mean_abs_log_ratio_lag{b['lag']}"] = f["mean_abs_log_ratio"]
             out[prefix + f"tokens_lag{b['lag']}"] = float(b["n_tokens"])
@@ -183,10 +190,11 @@ class IncrementalDiagnosis:
             lag = t_step - b_step
             if lag < 0:
                 n_negative += 1
-            lr = bits_to_fraction(sc.logprob_bits) - bits_to_fraction(tok.logprob_bits)
+            b_lp = bits_to_fraction(tok.logprob_bits)
+            lr = bits_to_fraction(sc.logprob_bits) - b_lp
             for table in (step_buckets, self._cumulative):
                 table.setdefault(lag, RunningBucket(lag, size=self._size)).add(
-                    seq.digest, sc.position, lr, seq.is_mixed_revision, self._eps)
+                    seq.digest, sc.position, lr, seq.is_mixed_revision, self._eps, behavior_logprob=b_lp)
         by_lag = [step_buckets[k].summary(self._eps) for k in sorted(step_buckets)]
         floor = Fraction(step_buckets[0].summary(self._eps)["mean_abs_log_ratio"]) if 0 in step_buckets else None
         partial: dict = {"by_lag": by_lag, "lag0_floor": step_buckets[0].summary(self._eps) if 0 in step_buckets else None}

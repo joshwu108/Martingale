@@ -250,3 +250,28 @@ def demo(workspace: str | None):
 
 
 cli.add_command(doctor, name="report")   # alias kept for scripts written against the first release
+
+
+@cli.command()
+@click.option("--dir", "workspace", default=".", show_default=True, help="Workspace directory.")
+@click.option("--model", required=True, help="HuggingFace model id or checkpoint path to score with.")
+@click.option("--dtype", default="float32", show_default=True)
+@click.option("--device", default="cpu", show_default=True)
+@click.option("--tolerance", default=0.05, show_default=True, help="Mean |diff| in nats counted as agreement.")
+@click.option("--json", "json_out", type=click.Path(), default=None)
+def recompute(workspace: str, model: str, dtype: str, device: str, tolerance: float, json_out: str | None):
+    """Re-score the record with a reference model: did the engine generate from the weights the trainer scored with?"""
+    import json as _json
+
+    from martingale.diagnostics.reference import hf_score_fn, render
+    from martingale.diagnostics.reference import recompute as _recompute
+    from martingale.record import TokenLedger
+
+    ws = Path(workspace)
+    if not (ws / "tokens.db").exists():
+        click.echo(f"No token record at {ws / 'tokens.db'}", err=True)
+        sys.exit(1)
+    report = _recompute(TokenLedger(ws / "tokens.db"), hf_score_fn(model, dtype, device), tolerance)
+    click.echo(render(report), nl=False)
+    if json_out:
+        Path(json_out).write_text(_json.dumps(report, indent=1))

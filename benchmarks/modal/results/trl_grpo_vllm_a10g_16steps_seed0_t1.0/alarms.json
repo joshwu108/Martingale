@@ -1,94 +1,15 @@
 {
  "alarms": [
   {
-   "kind": "unmatched",
-   "level": "error",
-   "step": 3,
-   "message": "8/8 loss rows were not matched to a recorded sequence; the record is incomplete (adapter lost row ids)",
-   "evidence": {
-    "unmatched": 8,
-    "seen": 8
-   }
-  },
-  {
-   "kind": "unmatched",
-   "level": "error",
-   "step": 4,
-   "message": "8/8 loss rows were not matched to a recorded sequence; the record is incomplete (adapter lost row ids)",
-   "evidence": {
-    "unmatched": 8,
-    "seen": 8
-   }
-  },
-  {
-   "kind": "unmatched",
-   "level": "error",
-   "step": 7,
-   "message": "8/8 loss rows were not matched to a recorded sequence; the record is incomplete (adapter lost row ids)",
-   "evidence": {
-    "unmatched": 8,
-    "seen": 8
-   }
-  },
-  {
-   "kind": "unmatched",
-   "level": "error",
-   "step": 8,
-   "message": "8/8 loss rows were not matched to a recorded sequence; the record is incomplete (adapter lost row ids)",
-   "evidence": {
-    "unmatched": 8,
-    "seen": 8
-   }
-  },
-  {
-   "kind": "unmatched",
-   "level": "error",
-   "step": 11,
-   "message": "8/8 loss rows were not matched to a recorded sequence; the record is incomplete (adapter lost row ids)",
-   "evidence": {
-    "unmatched": 8,
-    "seen": 8
-   }
-  },
-  {
-   "kind": "unmatched",
-   "level": "error",
-   "step": 12,
-   "message": "8/8 loss rows were not matched to a recorded sequence; the record is incomplete (adapter lost row ids)",
-   "evidence": {
-    "unmatched": 8,
-    "seen": 8
-   }
-  },
-  {
-   "kind": "stale_server",
-   "level": "error",
+   "kind": "floor_tail",
+   "level": "warn",
    "step": 13,
-   "message": "lag-0 floor jumped 54.2x right after a new generation (floor 1.48e-01, trailing median 2.74e-03). PROXY: tokens the trainer believes are fresh disagree with it as if they were stale; the inference server may be serving old weights (failed or lagging sync).",
+   "message": "lag-0 floor jumped 54.2x after a new generation but the median ratio is 1.0000: a few low-probability tokens disagree by nats (bf16-vs-fp32 tail effect, worse at temperature 1 and as the policy sharpens). Not a stale server. Consider FP16, a bit-exact engine, or masking tail ratios.",
    "evidence": {
     "floor": 0.14812429197866805,
     "trailing_median": 0.0027352522269216075,
-    "factor": 54.15379631931593
-   }
-  },
-  {
-   "kind": "unmatched",
-   "level": "error",
-   "step": 15,
-   "message": "8/8 loss rows were not matched to a recorded sequence; the record is incomplete (adapter lost row ids)",
-   "evidence": {
-    "unmatched": 8,
-    "seen": 8
-   }
-  },
-  {
-   "kind": "unmatched",
-   "level": "error",
-   "step": 16,
-   "message": "8/8 loss rows were not matched to a recorded sequence; the record is incomplete (adapter lost row ids)",
-   "evidence": {
-    "unmatched": 8,
-    "seen": 8
+    "factor": 54.15379631931593,
+    "ratio_p50": 1.0000023841859047
    }
   }
  ],
@@ -109,10 +30,16 @@
    "martingale/negative_lag_tokens": 0.0
   },
   {
+   "martingale/ess_fraction_lag2": 0.9190189907125913,
+   "martingale/mean_abs_log_ratio_lag2": 0.7702180219606821,
+   "martingale/tokens_lag2": 34.0,
    "martingale/span_fraction": 0.0,
    "martingale/negative_lag_tokens": 0.0
   },
   {
+   "martingale/ess_fraction_lag3": 0.9999365916542401,
+   "martingale/mean_abs_log_ratio_lag3": 0.003039704627978305,
+   "martingale/tokens_lag3": 30.0,
    "martingale/span_fraction": 0.0,
    "martingale/negative_lag_tokens": 0.0
   },
@@ -132,10 +59,16 @@
    "martingale/negative_lag_tokens": 0.0
   },
   {
+   "martingale/ess_fraction_lag2": 0.8980785805249026,
+   "martingale/mean_abs_log_ratio_lag2": 0.352921703552536,
+   "martingale/tokens_lag2": 27.0,
    "martingale/span_fraction": 0.0,
    "martingale/negative_lag_tokens": 0.0
   },
   {
+   "martingale/ess_fraction_lag3": 0.8287144934685163,
+   "martingale/mean_abs_log_ratio_lag3": 0.9853203022754738,
+   "martingale/tokens_lag3": 29.0,
    "martingale/span_fraction": 0.0,
    "martingale/negative_lag_tokens": 0.0
   },
@@ -155,10 +88,16 @@
    "martingale/negative_lag_tokens": 0.0
   },
   {
+   "martingale/ess_fraction_lag2": 0.888898533325583,
+   "martingale/mean_abs_log_ratio_lag2": 1.114948697255369,
+   "martingale/tokens_lag2": 27.0,
    "martingale/span_fraction": 0.0,
    "martingale/negative_lag_tokens": 0.0
   },
   {
+   "martingale/ess_fraction_lag3": 0.8275986387651094,
+   "martingale/mean_abs_log_ratio_lag3": 1.761845272123051,
+   "martingale/tokens_lag3": 29.0,
    "martingale/span_fraction": 0.0,
    "martingale/negative_lag_tokens": 0.0
   },
@@ -178,10 +117,16 @@
    "martingale/negative_lag_tokens": 0.0
   },
   {
+   "martingale/ess_fraction_lag2": 0.9626301669334637,
+   "martingale/mean_abs_log_ratio_lag2": 0.3369318686479019,
+   "martingale/tokens_lag2": 32.0,
    "martingale/span_fraction": 0.0,
    "martingale/negative_lag_tokens": 0.0
   },
   {
+   "martingale/ess_fraction_lag3": 0.9520657622043518,
+   "martingale/mean_abs_log_ratio_lag3": 0.41461885167731083,
+   "martingale/tokens_lag3": 32.0,
    "martingale/span_fraction": 0.0,
    "martingale/negative_lag_tokens": 0.0
   }

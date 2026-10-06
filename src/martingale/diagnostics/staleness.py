@@ -30,6 +30,10 @@ from martingale.record.store import TokenLedger
 DEFAULT_EPS: tuple[float, ...] = (0.1, 0.2)
 
 
+CONFIDENT_LOGPROB = Fraction(-7, 10)   # behavior log-prob above ln(0.5) ~ -0.693: the engine was at least 50% sure
+CONFIDENT_GAP = Fraction(2)            # trainer more than 2 nats lower on such a token cannot be bf16 rounding
+
+
 @dataclass(frozen=True)
 class ScoredToken:
     actor_id: int
@@ -39,6 +43,12 @@ class ScoredToken:
     train_step: int
     log_ratio: Fraction           # exact
     mixed_sequence: bool
+    behavior_logprob: Fraction = Fraction(0)
+
+    @property
+    def confident_disagreement(self) -> bool:
+        """The engine was confident and the trainer disagrees by nats: different weights or inputs, not numerics."""
+        return self.behavior_logprob > CONFIDENT_LOGPROB and self.log_ratio < -CONFIDENT_GAP
 
     @property
     def lag(self) -> int:
@@ -65,7 +75,7 @@ def scored_tokens(ledger: TokenLedger) -> Iterable[ScoredToken]:
                 actor_id=seq.actor_id, sequence_digest=seq.digest, position=s.position,
                 behavior_step=step_of(tok.revision_digest), train_step=step_of(s.train_revision_digest),
                 log_ratio=bits_to_fraction(s.logprob_bits) - bits_to_fraction(tok.logprob_bits),
-                mixed_sequence=mixed,
+                mixed_sequence=mixed, behavior_logprob=bits_to_fraction(tok.logprob_bits),
             )
 
 
@@ -76,6 +86,7 @@ MAX_EXP = 700.0   # math.exp overflows above ~709.78; ratios beyond this are rep
 class Bucket:
     lag: int
     n_tokens: int = 0
+    n_confident_disagreements: int = 0
     n_overflow: int = 0
     n_sequences: int = 0
     n_mixed_sequences: int = 0
@@ -87,6 +98,7 @@ class Bucket:
 
     def add(self, t: ScoredToken) -> None:
         self.n_tokens += 1
+        self.n_confident_disagreements += int(t.confident_disagreement)
         self.sum_log_ratio += t.log_ratio
         self.sum_abs_log_ratio += abs(t.log_ratio)
         self.max_abs_log_ratio = max(self.max_abs_log_ratio, abs(t.log_ratio))
@@ -110,6 +122,7 @@ class Bucket:
         out = {
             "lag": self.lag, "n_tokens": n, "n_sequences": self.n_sequences,
             "n_mixed_sequences": self.n_mixed_sequences, "n_overflow_tokens": n_overflow,
+            "n_confident_disagreements": self.n_confident_disagreements,
             "mean_log_ratio": _fs(mean), "mean_abs_log_ratio": _fs(mean_abs),
             "max_abs_log_ratio": _fs(self.max_abs_log_ratio),
             "float_informational": {
@@ -235,12 +248,18 @@ def diagnosis(d: dict, eps: float = 0.2) -> list[str]:
                              "unbiased at the sequence level (see martingale.exact).")
         if f["floor"] > 1e-2:
             lag0 = d["lag0_floor"]["float_informational"]
-            if tail_dominated(lag0):
+            n_conf = d["lag0_floor"].get("n_confident_disagreements", 0)
+            if n_conf:
+                lines.append(f"{n_conf} lag-0 tokens the engine was >=50% sure of are scored >2 nats lower by the "
+                             "trainer. bf16 rounding cannot do that: the engine generated from DIFFERENT WEIGHTS (or a "
+                             "different input) than the trainer scored with. Check that the weight sync into the "
+                             "inference engine actually applies (compare the engine's log-probs against a reference "
+                             "forward of the trainer's checkpoint: `martingale recompute`).")
+            elif tail_dominated(lag0):
                 lines.append(f"The engine floor is large (mean |log r| = {f['floor']:.2e}) but the median ratio is "
-                             f"{lag0['ratio_p50']:.4f}: the mismatch sits in a few low-probability tokens, the known "
-                             "bf16-vs-fp32 tail effect, worse at temperature 1 and as the policy sharpens. Not a stale "
-                             "server (that would move the median). FP16, a bit-exact engine, or masking tail ratios "
-                             "(MIS) shrinks it.")
+                             f"{lag0['ratio_p50']:.4f} and no confident token disagrees: the mismatch sits in "
+                             "low-probability tokens, the bf16-vs-fp32 tail effect, worse at temperature 1 and as the "
+                             "policy sharpens. FP16, a bit-exact engine, or masking tail ratios (MIS) shrinks it.")
             else:
                 lines.append(f"The engine floor is large (mean |log r| = {f['floor']:.2e}) and the median ratio is "
                              f"{lag0['ratio_p50']:.4f}: the engine and the trainer disagree on ordinary tokens. "

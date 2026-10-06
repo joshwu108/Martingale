@@ -38,7 +38,7 @@ MANIFEST_KEYS = frozenset({"kind", "weights_digest", "tokenizer_digest", "sample
 TOKEN_KEYS = frozenset({"revision_digest", "position", "token_id", "logprob_bits", "topk", "prev_digest", "digest"})
 SEQUENCE_KEYS = frozenset({"actor_id", "sequence_index", "sequence_id", "prompt_digest", "prompt_len",
                            "token_digests", "reward_bits", "prev_sequence_digest", "terminal_digest",
-                           "digest", "tokens", "engine_request_id", "scores"})
+                           "digest", "tokens", "engine_request_id", "scores", "prompt_ids"})
 SCORE_KEYS = frozenset({"sequence_digest", "position", "train_revision_digest", "logprob_bits", "prev_digest", "digest"})
 
 
@@ -237,6 +237,14 @@ def verify_sequence(seq: dict, revs: dict[str, dict], expected_prev: str, expect
         errs.append("prompt_digest malformed")
     if not _is_int(seq["prompt_len"]):
         errs.append("prompt_len malformed")
+    pids = seq.get("prompt_ids")
+    if pids is not None:
+        if not (isinstance(pids, list) and all(_is_int(t) for t in pids)) or len(pids) != seq["prompt_len"]:
+            errs.append("prompt_ids malformed")
+        else:
+            raw = b"".join(int(t).to_bytes(4, "little", signed=True) for t in pids)
+            if hashlib.blake2b(raw, digest_size=32).hexdigest() != seq["prompt_digest"]:
+                errs.append("prompt_ids do not hash to prompt_digest")
     if not isinstance(seq["token_digests"], list) or not _is_hex64(seq["prev_sequence_digest"]) \
             or not _is_hex64(seq["terminal_digest"]) or not _is_hex64(seq["digest"]):
         errs.append("digest fields malformed")

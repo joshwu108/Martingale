@@ -146,14 +146,28 @@ class TestTailVersusShift:
         r = rec.publish_revision("1" * 64, TOK, S, step=0)
         with rec.sequence(0, "a", [1]) as a:
             for i in range(40):
-                a.token(r.digest, i, -0.01)
+                a.token(r.digest, i, -0.01 if i != 3 else -7.0)   # token 3 is a genuine tail sample
         lps = [-0.01] * 40
-        lps[3] = -9.0                                     # one tail token disagrees by nine nats
+        lps[3] = -16.0                                    # the tail token disagrees by nine nats
         rec.score(a.record.digest, r.digest, lps)
         d = decompose(rec.ledger)
         assert tail_dominated(d["lag0_floor"]["float_informational"])
+        assert d["lag0_floor"]["n_confident_disagreements"] == 0
         lines = diagnosis(d)
-        assert any("low-probability tokens" in line and "Not a stale server" in line for line in lines)
+        assert any("low-probability tokens" in line for line in lines)
+
+    def test_confident_disagreement_is_named_as_different_weights(self, tmp_path):
+        rec = Recorder(tmp_path / "ws")
+        r = rec.publish_revision("1" * 64, TOK, S, step=0)
+        with rec.sequence(0, "a", [1]) as a:
+            for i in range(40):
+                a.token(r.digest, i, -0.01)
+        lps = [-0.01] * 40
+        lps[3] = -9.0                                     # engine was certain, trainer says impossible
+        rec.score(a.record.digest, r.digest, lps)
+        d = decompose(rec.ledger)
+        assert d["lag0_floor"]["n_confident_disagreements"] == 1
+        assert any("DIFFERENT WEIGHTS" in line for line in diagnosis(d))
 
     def test_shifted_floor_is_named_as_stale_or_config(self, tmp_path):
         rec = Recorder(tmp_path / "ws")

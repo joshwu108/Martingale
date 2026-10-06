@@ -14,42 +14,46 @@ trainer later thought.
 
 > **Status (2026-10-06).** Record, live diagnosis with alarms, TRL `GRPOTrainer`
 > integration and an exact estimator bench are implemented and tested (`make check`:
-> ruff, mypy, 415 tests). Two real TRL + vLLM runs on Modal completed and verified;
+> ruff, mypy, 421 tests). Two real TRL + vLLM runs on Modal completed and verified;
 > their numbers are below. Claims map to artifacts in
 > [`paper/claim_evidence.md`](paper/claim_evidence.md); limits in
 > [`docs/nonclaims.md`](docs/nonclaims.md).
 
-## First real run (2026-10-06)
+## First real run (2026-10-06): it caught a silent stale engine
 
 Qwen2.5-0.5B-Instruct, TRL 1.13 GRPO with vLLM 0.28 colocated on one A10G, 16 steps,
-each generation batch reused over two optimizer steps. The independent checker verified
-the record (64 sequences, 240 tokens, 12 revisions) against the head the trainer printed.
-What the doctor found, from `benchmarks/modal/results/`:
+each generation batch reused over four optimizer steps. The independent checker verified
+the record (64 sequences, 480 scores, 20 revisions) against the head the trainer printed.
+`martingale doctor` on that record:
 
-| temperature | lag-0 floor, mean abs log r | lag-0 median ratio | lag-0 max abs log r |
+| lag | tokens | mean log r | mean abs log r | max abs log r | median ratio | ESS/n |
+|---|---|---|---|---|---|---|
+| 0 | 120 | -0.41 | 0.45 | 9.26 | 1.0000 | 0.40 |
+| 1 | 120 | -0.50 | 0.50 | 9.74 | 1.0000 | 0.93 |
+| 2 | 120 | -0.64 | 0.64 | 13.08 | 1.0000 | 0.92 |
+| 3 | 120 | -0.77 | 0.78 | 11.79 | 1.0000 | 0.90 |
+
+Lag-0 tokens were scored by the same weights that supposedly generated them, yet the
+first token of a correct answer like `172` got log-prob 0.000 from vLLM and -9.3 from the
+trainer. bf16 rounding cannot do that. `martingale recompute` scored the record with the
+untouched initial checkpoint on a laptop CPU:
+
+| generation at step | ref vs vLLM | ref vs trainer | verdict |
 |---|---|---|---|
-| 1.0 | 2.7e-3 on the first generation, then 0.81, 1.03, 0.15 | 1.0007 | 9.26 |
-| 0.7 | 6.1e-5 | 1.0000 | 0.001 |
+| 0 | 0.0027 | 0.0000 | both match: floor is numerics |
+| 4 | 0.0014 | 0.81 | **vLLM generated from the initial weights; the trainer had moved** |
+| 8 | 0.0005 | 1.03 | same |
+| 12 | 0.11 | 0.26 | partially updated |
 
-The mean says the engine and the trainer disagree by half a nat on fresh tokens; the
-median says they agree on almost every token. The gap is a handful of low-probability
-tokens that temperature 1 sampled and that bf16 and fp32 score nats apart, and it grew as
-the policy sharpened (entropy 0.025 to 0.002 over the run). That is the training-inference
-mismatch the TIS/MIS and FP16 papers describe, measured per token on a live run. The
-doctor's first version flagged it as a stale server; it now separates the two by whether
-the median moved, and prints:
-
-```
-- The engine floor is large (mean |log r| = 4.53e-01) but the median ratio is 1.0007: the
-  mismatch sits in a few low-probability tokens, the known bf16-vs-fp32 tail effect, worse
-  at temperature 1 and as the policy sharpens. Not a stale server (that would move the
-  median). FP16, a bit-exact engine, or masking tail ratios (MIS) shrinks it.
-```
-
-Two adapter bugs surfaced on this run and are fixed: the second pass over a generation
-batch was not scored (the records hold lags 0 and 1 only), and the copied database was
-empty because the write-ahead log had not been checkpointed. The exports and reports were
-unaffected. Details in `benchmarks/modal/results/README.md`.
+TRL's colocated vLLM kept serving the initial weights for most of the run while the
+trainer trained on its outputs. Rewards stayed at 1.0 because the initial model already
+solved the task, so nothing in TRL's own logs showed it. The first version of the doctor
+labelled this as bf16 tail noise because the median ratio stayed at 1.0000 (on a
+near-deterministic task old and new weights agree on most tokens); the rule is now
+**confident disagreement**: any lag-0 token the engine gave at least 50% probability
+that the trainer scores more than two nats lower raises `stale_server`. Numerics never
+produces one of those. Full artifacts in `benchmarks/modal/results/`; the cause inside
+TRL's colocate weight sync is not yet diagnosed and is the next thing to look at.
 
 ## Sixty seconds, no GPU
 
@@ -59,7 +63,7 @@ uv sync
 uv run martingale demo
 ```
 
-The demo records a synthetic run and prints the same diagnosis for it.
+The demo records a synthetic run and prints the same kind of diagnosis for it.
 
 ## The problem
 
@@ -88,6 +92,7 @@ print("ledger head:", flight.head())     # one line for your run log
 ```bash
 martingale doctor --dir ./martingale_ws          # the diagnosis above, from your run
 martingale doctor --dir ./martingale_ws --json out.json --markdown out.md
+martingale recompute --dir ./martingale_ws --model <checkpoint>   # which weights did the engine really use?
 ```
 
 The trainer also runs the doctor **live**: after every optimizer step it logs
@@ -99,7 +104,8 @@ Weights & Biases shows them), and raises on an error-level alarm unless you pass
 | Alarm | What it means | Level |
 |---|---|---|
 | `weights_unchanged` | a generation ran under the same trainer weights as the previous one although optimizer steps happened: frozen model, lr 0, broken optimizer (exact, from the record) | error |
-| `stale_server` | the lag-0 engine floor jumped 10x right after a new generation: tokens the trainer thinks are fresh behave as stale; the inference server is likely serving old weights (a proxy, the record holds the trainer's digest, not the server's) | error |
+| `stale_server` | a lag-0 token the engine gave >=50% probability is scored >2 nats lower by the trainer: the engine generated from different weights (sync not applied) or inputs. Caught a real one on the first run | error |
+| `floor_tail` | the lag-0 floor jumped with no confident disagreement: low-probability tokens disagree by nats (bf16 tail effect) | warn |
 | `negative_lag` | tokens scored by an older step than generated them: resume mislabel or server ahead of trainer | error |
 | `unmatched` | more than 1% of loss rows could not be matched to a recorded sequence | error |
 | `floor_jump` | lag-0 floor 3x its trailing median: engine config, dtype or server settings changed | warn |
@@ -168,8 +174,8 @@ SIGKILL crash cuts); its five theses and their reports are in
 
 ## Non-claims (short form; full list in `docs/nonclaims.md`)
 
-- Two real runs of 16 steps on a 0.5B model; no claim beyond them. The runs that produced them
-  had two adapter bugs (second-pass scores dropped, empty database copy), since fixed.
+- Three real runs of 16 steps on a 0.5B model; no claim beyond them. The stale-engine finding is
+  one model, one TRL and vLLM version, one seed; the cause inside TRL's colocate sync is undiagnosed.
 - The lag-0 floor includes whatever the engine's log-prob mode is (vLLM
   processed vs raw log-probs are a config property not yet captured).
 - The record binds what the engine reported; it cannot verify the draw.

@@ -19,8 +19,9 @@ def _diag(step, by_lag=(), floor=None, weights=(), span=0.0, neg=0, n_seq=1):
                          span_fraction=span, n_negative_lag=neg, unscored_new_sequences=0)
 
 
-def _bucket(lag, n, ess_fraction, p50=1.0):
-    return {"lag": lag, "n_tokens": n, "float_informational": {"ess_fraction": ess_fraction, "ratio_p50": p50}}
+def _bucket(lag, n, ess_fraction, p50=1.0, n_conf=0):
+    return {"lag": lag, "n_tokens": n, "n_confident_disagreements": n_conf,
+            "float_informational": {"ess_fraction": ess_fraction, "ratio_p50": p50}}
 
 
 class TestAlarms:
@@ -46,13 +47,14 @@ class TestAlarms:
             assert evaluate(_diag(step, [_bucket(0, 10, 1.0)], floor=1e-6), h, CFG) == []
         a = evaluate(_diag(4, [_bucket(0, 10, 1.0)], floor=5e-6), h, CFG)            # 5x, no new generation
         assert [x.kind for x in a] == ["floor_jump"] and a[0].level == "warn"
-        a = evaluate(_diag(5, [_bucket(0, 10, 1.0, p50=1.0007)], floor=1e-4, weights=["c" * 64]), h, CFG)   # 50x, median at 1
-        assert [x.kind for x in a] == ["floor_tail"] and a[0].level == "warn" and "Not a stale server" in a[0].message
-        h2 = AlarmHistory()
-        for step in range(1, 4):
-            evaluate(_diag(step, [_bucket(0, 10, 1.0)], floor=1e-6), h2, CFG)
-        a = evaluate(_diag(5, [_bucket(0, 10, 1.0, p50=0.8)], floor=1e-4, weights=["c" * 64]), h2, CFG)     # median moved
-        assert [x.kind for x in a] == ["stale_server"] and a[0].level == "error" and "PROXY" in a[0].message
+        a = evaluate(_diag(5, [_bucket(0, 10, 1.0, p50=1.0007)], floor=1e-4, weights=["c" * 64]), h, CFG)   # 50x, no confident disagreement
+        assert [x.kind for x in a] == ["floor_tail"] and a[0].level == "warn" and "no confident disagreements" in a[0].message
+
+    def test_confident_disagreement_is_the_stale_server_verdict(self):
+        """The real-run case: median ratio at 1, but tokens the engine was sure of score nats lower."""
+        a = evaluate(_diag(5, [_bucket(0, 30, 0.4, p50=1.0, n_conf=3)], floor=0.8, weights=["c" * 64]), AlarmHistory(), CFG)
+        assert [x.kind for x in a] == ["stale_server"] and a[0].level == "error"
+        assert a[0].evidence["n_confident_disagreements"] == 3 and "different weights" in a[0].message
 
     def test_floor_needs_enough_tokens(self):
         h = AlarmHistory()
