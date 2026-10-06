@@ -19,7 +19,10 @@ Setup (mirrors Reservoir's working vLLM tier, 2026-10-05):
   reward  exact-match on 2-digit addition prompts (synthetic, no dataset download)
 
 Usage
-  modal run benchmarks/modal/trl_grpo_vllm.py                 # ~15 min, a few dollars
+  pip install modal && modal setup                            # once
+  modal run benchmarks/modal/trl_grpo_vllm.py                 # default engine, temperature 1.0
+  modal run benchmarks/modal/trl_grpo_vllm.py --temperature 0.7
+  modal run benchmarks/modal/trl_grpo_vllm.py --batch-invariant   # deterministic vLLM kernels: is the floor smaller?
   modal run benchmarks/modal/trl_grpo_vllm.py --max-steps 24
 
 Not run yet by the author (needs Modal credentials and a GPU budget); the
@@ -80,11 +83,20 @@ def exact_match_reward(completions, answer, **kwargs):
     return out
 
 
-def _start_vllm_server(log_path: Path) -> subprocess.Popen:
-    env = {**os.environ, "CUDA_VISIBLE_DEVICES": "1"}
-    cmd = [sys.executable, "-m", "trl.scripts.vllm_serve", "--model", MODEL_ID, "--host", SERVER_HOST,
-           "--port", str(SERVER_PORT), "--group-port", str(GROUP_PORT), "--dtype", "bfloat16",
-           "--gpu-memory-utilization", "0.85"]
+def _start_vllm_server(log_path: Path, batch_invariant: bool) -> subprocess.Popen:
+    """Launch vLLM the way `trl vllm-serve` does on TRL 1.13 (Reservoir's working recipe, 2026-10-05):
+    plain `vllm serve` with the NCCL weight-transfer engine the trainer pushes weights through,
+    processed log-probs (what TRL's client expects) and dev-mode endpoints."""
+    env = {**os.environ, "CUDA_VISIBLE_DEVICES": "1", "VLLM_SERVER_DEV_MODE": "1",
+           "VLLM_WORKER_MULTIPROC_METHOD": "spawn", "NCCL_DEBUG": "WARN"}
+    if batch_invariant:
+        env["VLLM_BATCH_INVARIANT"] = "1"      # inference-only deterministic kernels; server process only
+    cmd = [sys.executable, "-m", "vllm.entrypoints.cli.main", "serve", MODEL_ID,
+           "--host", SERVER_HOST, "--port", str(SERVER_PORT),
+           "--gpu-memory-utilization", "0.5", "--max-model-len", "1024", "--dtype", "bfloat16",
+           "--enforce-eager", "--weight-transfer-config", json.dumps({"backend": "nccl"}),
+           "--logprobs-mode", "processed_logprobs", "--max-logprobs", "-1",
+           "--uvicorn-log-level", "warning"]
     log = open(log_path, "wb")
     proc = subprocess.Popen(cmd, env=env, stdout=log, stderr=subprocess.STDOUT)
     deadline = time.time() + SERVER_START_TIMEOUT_S
@@ -92,7 +104,7 @@ def _start_vllm_server(log_path: Path) -> subprocess.Popen:
         if proc.poll() is not None:
             raise RuntimeError(f"vLLM server exited early; see {log_path}")
         try:
-            with urllib.request.urlopen(f"http://{SERVER_HOST}:{SERVER_PORT}/health/", timeout=5) as r:
+            with urllib.request.urlopen(f"http://{SERVER_HOST}:{SERVER_PORT}/health", timeout=5) as r:
                 if r.status == 200:
                     return proc
         except (urllib.error.URLError, ConnectionError, TimeoutError):
@@ -101,7 +113,7 @@ def _start_vllm_server(log_path: Path) -> subprocess.Popen:
 
 
 @app.function(image=image, gpu=GPU, timeout=60 * 60, volumes={"/hf_cache": hf_cache})
-def run_grpo(max_steps: int = 16, seed: int = 0) -> dict:
+def run_grpo(max_steps: int = 16, seed: int = 0, temperature: float = 1.0, batch_invariant: bool = False) -> dict:
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
     from trl import GRPOConfig
@@ -112,16 +124,19 @@ def run_grpo(max_steps: int = 16, seed: int = 0) -> dict:
 
     work = Path("/tmp/martingale_run")
     work.mkdir(parents=True, exist_ok=True)
-    server = _start_vllm_server(work / "vllm_server.log")
+    server = _start_vllm_server(work / "vllm_server.log", batch_invariant)
     try:
         os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+        os.environ["NCCL_DEBUG"] = "WARN"
         tok = AutoTokenizer.from_pretrained(MODEL_ID)
         model = AutoModelForCausalLM.from_pretrained(MODEL_ID, torch_dtype=torch.float32)
-        flight = MartingaleRecorder(str(work / "ws"), tokenizer=tok)
+        flight = MartingaleRecorder(str(work / "ws"), tokenizer=tok, sampler_overrides={
+            "engine_version": f"vllm {VLLM_VERSION} processed_logprobs"
+                              + (" batch_invariant" if batch_invariant else "")})
         args = GRPOConfig(
             output_dir=str(work / "out"), seed=seed, max_steps=max_steps, logging_steps=1,
             per_device_train_batch_size=8, gradient_accumulation_steps=1, num_generations=8,
-            max_completion_length=16, max_prompt_length=64, temperature=1.0, learning_rate=5e-6,
+            max_completion_length=16, max_prompt_length=64, temperature=temperature, learning_rate=5e-6,
             num_iterations=2, steps_per_generation=2, report_to=[], save_strategy="no", bf16=False,
             use_vllm=True, vllm_mode="server", vllm_server_base_url=f"http://{SERVER_HOST}:{SERVER_PORT}",
             vllm_group_port=GROUP_PORT, vllm_server_timeout=120.0, vllm_importance_sampling_correction=False,
@@ -140,16 +155,18 @@ def run_grpo(max_steps: int = 16, seed: int = 0) -> dict:
             "stats": flight.stats, "log_history": trainer.state.log_history,
             "tokens_db": (work / "ws" / "tokens.db").read_bytes(),
             "config": {"model": MODEL_ID, "vllm": VLLM_VERSION, "trl": "1.13.0", "gpu": GPU,
-                       "max_steps": max_steps, "seed": seed, "num_iterations": 2, "steps_per_generation": 2},
+                       "max_steps": max_steps, "seed": seed, "temperature": temperature,
+                       "batch_invariant": batch_invariant, "num_iterations": 2, "steps_per_generation": 2},
         }
     finally:
         server.terminate()
 
 
 @app.local_entrypoint()
-def main(max_steps: int = 16, seed: int = 0):
-    res = run_grpo.remote(max_steps=max_steps, seed=seed)
-    out = RESULTS_DIR / f"trl_grpo_vllm_a10g_{max_steps}steps_seed{seed}"
+def main(max_steps: int = 16, seed: int = 0, temperature: float = 1.0, batch_invariant: bool = False):
+    res = run_grpo.remote(max_steps=max_steps, seed=seed, temperature=temperature, batch_invariant=batch_invariant)
+    tag = f"_t{temperature}" + ("_bi" if batch_invariant else "")
+    out = RESULTS_DIR / f"trl_grpo_vllm_a10g_{max_steps}steps_seed{seed}{tag}"
     out.mkdir(parents=True, exist_ok=True)
     (out / "tokens.db").write_bytes(res.pop("tokens_db"))
     (out / "report.md").write_text(res.pop("report_md"))

@@ -1,9 +1,13 @@
 """diagnostics/report.py — render the decomposition as markdown."""
 from __future__ import annotations
 
+from martingale.diagnostics.staleness import diagnosis
+
 
 def render_markdown(d: dict) -> str:
-    lines = ["# martingale staleness report", "",
+    lines = ["# martingale doctor", ""]
+    lines += [f"- {line}" for line in diagnosis(d)]
+    lines += ["",
              f"sequences: {d['n_sequences']} (mixed-revision: {d['n_mixed_sequences']}, unscored: {d['n_unscored_sequences']}), "
              f"scored tokens: {d['n_scored_tokens']}", ""]
     if d["lag0_floor"] is None:

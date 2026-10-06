@@ -171,3 +171,72 @@ def decompose(ledger: TokenLedger, eps: tuple[float, ...] = DEFAULT_EPS) -> dict
             "memory is O(scored tokens): one float per token is kept for percentiles",
         ],
     }
+
+
+def attribute(d: dict) -> dict:
+    """Split total |log-ratio| mass into the lag-0 engine floor and the staleness excess above it.
+
+    Exact: uses the Fraction mean-abs per bucket. floor = lag-0 mean |log r|; for every lag > 0
+    bucket, excess = max(0, mean_abs - floor) * n_tokens. Shares are of the total mean-abs mass
+    over lag > 0 tokens. If there are no lag-0 tokens the floor is unknown and shares are None.
+    """
+    floor = None if d["lag0_floor"] is None else Fraction(d["lag0_floor"]["mean_abs_log_ratio"])
+    total = Fraction(0)
+    excess = Fraction(0)
+    n_stale = 0
+    for b in d["by_lag"]:
+        if b["lag"] <= 0:
+            continue
+        mean_abs = Fraction(b["mean_abs_log_ratio"])
+        total += mean_abs * b["n_tokens"]
+        n_stale += b["n_tokens"]
+        if floor is not None:
+            excess += max(Fraction(0), mean_abs - floor) * b["n_tokens"]
+    if floor is None or total == 0:
+        share_stale = None
+    else:
+        share_stale = excess / total
+    return {
+        "floor_mean_abs_log_ratio": None if floor is None else _fs(floor),
+        "stale_tokens": n_stale,
+        "staleness_share": None if share_stale is None else _fs(share_stale),
+        "engine_share": None if share_stale is None else _fs(1 - share_stale),
+        "float_informational": {
+            "staleness_share": None if share_stale is None else float(share_stale),
+            "engine_share": None if share_stale is None else float(1 - share_stale),
+            "floor": None if floor is None else float(floor),
+        },
+    }
+
+
+def diagnosis(d: dict, eps: float = 0.2) -> list[str]:
+    """Plain-language lines a researcher can act on. Thresholds are heuristics, stated inline."""
+    a = attribute(d)
+    lines: list[str] = []
+    f = a["float_informational"]
+    if f["staleness_share"] is None:
+        lines.append("No lag-0 tokens: score at least one generation batch with the weights that produced it "
+                     "(num_iterations=1 or steps_per_generation=1 for one step) to measure the engine floor.")
+    else:
+        lines.append(f"Of the off-policy signal in stale tokens, {100 * f['staleness_share']:.0f}% is staleness and "
+                     f"{100 * f['engine_share']:.0f}% is engine-vs-trainer mismatch (lag-0 floor: mean |log r| = {f['floor']:.2e}).")
+        if f["floor"] > 1e-2:
+            lines.append("The engine floor is large (>1e-2 mean |log r|): the inference engine and the trainer disagree "
+                         "even on fresh tokens. Check dtype (bf16 vs fp32 lm_head), sampler settings, and whether the "
+                         "server's weights were actually updated; FP16 or a bit-exact engine shrinks this.")
+        if f["staleness_share"] > 0.5:
+            lines.append("Staleness dominates: lower num_iterations / the async level, or use a correction that is "
+                         "unbiased at the sequence level (see martingale.exact).")
+    for b in d["by_lag"]:
+        fi = b["float_informational"]
+        if b["lag"] > 0 and fi["ess_fraction"] < 0.5:
+            lines.append(f"lag {b['lag']}: effective sample size is {100 * fi['ess_fraction']:.0f}% of the tokens; "
+                         f"{100 * fi['clipped_fraction'][str(eps)]:.0f}% would be clipped at eps={eps}. Rollouts this "
+                         "stale are mostly wasted.")
+    if d["n_negative_lag_tokens"]:
+        lines.append(f"{d['n_negative_lag_tokens']} tokens were scored by an OLDER step than generated them: "
+                     "a resume, a mislabelled batch, or the server serving newer weights than the trainer thinks.")
+    if d["n_mixed_sequences"]:
+        lines.append(f"{d['n_mixed_sequences']} sequences span a weight update (in-flight sync); their tokens carry "
+                     "two revisions and are bucketed by their own lag.")
+    return lines

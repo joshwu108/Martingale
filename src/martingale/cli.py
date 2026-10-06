@@ -210,11 +210,11 @@ def _verify_tokens(ws: Path, expected_head: str | None) -> bool:
               help="Clip half-widths to report clipped fractions for (repeatable).")
 @click.option("--json", "json_out", type=click.Path(), default=None, help="Write the full JSON report here.")
 @click.option("--markdown", "md_out", type=click.Path(), default=None, help="Write the markdown table here.")
-def report(workspace: str, eps: tuple[float, ...], json_out: str | None, md_out: str | None):
-    """Staleness-vs-mismatch decomposition of the token record (lag 0 = engine floor)."""
+def doctor(workspace: str, eps: tuple[float, ...], json_out: str | None, md_out: str | None):
+    """Diagnose a run: how much of your off-policy signal is staleness vs engine mismatch, per lag."""
     import json as _json
 
-    from martingale.diagnostics import decompose, render_markdown
+    from martingale.diagnostics import attribute, decompose, render_markdown
     from martingale.record import TokenLedger
 
     ws = Path(workspace)
@@ -222,6 +222,7 @@ def report(workspace: str, eps: tuple[float, ...], json_out: str | None, md_out:
         click.echo(f"No token record at {ws / 'tokens.db'}", err=True)
         sys.exit(1)
     d = decompose(TokenLedger(ws / "tokens.db"), eps=tuple(eps))
+    d["attribution"] = attribute(d)
     md = render_markdown(d)
     click.echo(md, nl=False)
     if json_out:
@@ -246,3 +247,6 @@ def demo(workspace: str | None):
     else:
         run_demo(Path(workspace), echo=click.echo)
         click.echo(f"workspace kept at {Path(workspace).resolve()}: try `martingale verify --dir` and `martingale report --dir`")
+
+
+cli.add_command(doctor, name="report")   # alias kept for scripts written against the first release

@@ -6,7 +6,7 @@ import pytest
 from click.testing import CliRunner
 
 from martingale.cli import cli
-from martingale.diagnostics import decompose, render_markdown, scored_tokens
+from martingale.diagnostics import attribute, decompose, diagnosis, render_markdown, scored_tokens
 from martingale.record import Recorder, SamplerConfig, bits_to_fraction, float_bits
 
 S = SamplerConfig(temperature=1.0)
@@ -91,3 +91,49 @@ class TestDecompose:
     def test_cli_report_without_record_fails(self, tmp_path):
         r = CliRunner().invoke(cli, ["report", "--dir", str(tmp_path)])
         assert r.exit_code == 1
+
+
+class TestAttribution:
+    def test_shares_are_exact_and_sum_to_one(self, tmp_path):
+        d = decompose(_ws(tmp_path).ledger)
+        a = attribute(d)
+        stale = Fraction(a["staleness_share"]); engine = Fraction(a["engine_share"])
+        assert stale + engine == 1 and 0 <= stale <= 1
+        # floor is tiny here (1e-6), so almost everything is staleness
+        assert stale > Fraction(99, 100)
+
+    def test_no_lag0_means_unknown_floor(self, tmp_path):
+        rec = Recorder(tmp_path / "ws")
+        r0 = rec.publish_revision("1" * 64, TOK, S, step=0)
+        r2 = rec.publish_revision("2" * 64, TOK, S, step=2)
+        with rec.sequence(0, "a", [1]) as a:
+            a.token(r0.digest, 5, -0.5)
+        rec.score(a.record.digest, r2.digest, [-0.9])
+        d = decompose(rec.ledger)
+        assert attribute(d)["staleness_share"] is None
+        assert any("No lag-0 tokens" in line for line in diagnosis(d))
+
+    def test_diagnosis_mentions_large_floor_and_negative_lag(self, tmp_path):
+        rec = Recorder(tmp_path / "ws")
+        r0 = rec.publish_revision("1" * 64, TOK, S, step=0)
+        r1 = rec.publish_revision("2" * 64, TOK, S, step=1)
+        r5 = rec.publish_revision("3" * 64, TOK, S, step=5)
+        with rec.sequence(0, "a", [1]) as a:
+            a.token(r5.digest, 5, -0.5)
+        rec.score(a.record.digest, r5.digest, [-0.6])          # lag 0, floor 0.1 (large)
+        with rec.sequence(0, "b", [1]) as b:
+            b.token(r5.digest, 5, -0.5)
+        rec.score(b.record.digest, r1.digest, [-0.5])          # negative lag
+        with rec.sequence(0, "c", [1]) as c:
+            c.token(r0.digest, 5, -0.5)
+        rec.score(c.record.digest, r5.digest, [-0.7])          # lag 5
+        lines = diagnosis(decompose(rec.ledger))
+        assert any("engine floor is large" in line for line in lines)
+        assert any("OLDER step" in line for line in lines)
+
+    def test_cli_doctor_and_report_alias(self, tmp_path):
+        _ws(tmp_path)
+        for cmd in ("doctor", "report"):
+            r = CliRunner().invoke(cli, [cmd, "--dir", str(tmp_path / "ws")])
+            assert r.exit_code == 0, r.output
+            assert "is staleness and" in r.output
