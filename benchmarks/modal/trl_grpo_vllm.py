@@ -47,7 +47,10 @@ GPU = "A10G:2"
 SERVER_HOST, SERVER_PORT, GROUP_PORT = "127.0.0.1", 8000, 51216
 SERVER_START_TIMEOUT_S = 900.0
 RESULTS_DIR = Path(__file__).parent / "results"
-REPO_ROOT = Path(__file__).resolve().parents[2]
+# Modal re-imports this file as /root/trl_grpo_vllm.py inside the container, where it has
+# no repo above it; the mounts below only matter locally, at image-definition time.
+_here = Path(__file__).resolve()
+REPO_ROOT = _here.parents[2] if len(_here.parents) > 2 else Path("/root")
 
 image = (
     modal.Image.debian_slim(python_version="3.12")

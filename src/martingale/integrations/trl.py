@@ -325,12 +325,20 @@ def build_trainer_class() -> type:
     from martingale.integrations._trl_compat import require_trl
     support = require_trl()
 
+    from martingale.integrations._trl_callback import MartingaleMonitor, build_callback_class
+    callback_cls = build_callback_class(support.trainer_callback)
+
     class MartingaleGRPOTrainer(MartingaleGRPOMixin, support.grpo_trainer):  # type: ignore[misc,valid-type]
-        def __init__(self, *args: Any, flight_recorder: MartingaleRecorder, **kwargs: Any) -> None:
+        def __init__(self, *args: Any, flight_recorder: MartingaleRecorder, alarm_config: Any = None,
+                     halt_on_error: bool = True, **kwargs: Any) -> None:
             if not isinstance(flight_recorder, MartingaleRecorder):
                 raise TypeError("flight_recorder must be a MartingaleRecorder")
             super().__init__(*args, **kwargs)
             self.flight_recorder = flight_recorder
+            self.martingale_monitor = MartingaleMonitor(flight_recorder, alarm_config, halt_on_error=halt_on_error)
+            cb = callback_cls(self.martingale_monitor)
+            cb.trainer = self
+            self.add_callback(cb)
 
     MartingaleGRPOTrainer.__module__ = __name__
     return MartingaleGRPOTrainer

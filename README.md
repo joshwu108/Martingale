@@ -84,6 +84,24 @@ martingale doctor --dir ./martingale_ws          # the diagnosis above, from you
 martingale doctor --dir ./martingale_ws --json out.json --markdown out.md
 ```
 
+The trainer also runs the doctor **live**: after every optimizer step it logs
+`martingale/staleness_share`, `martingale/floor_mean_abs_log_ratio`,
+`martingale/ess_fraction_lag{k}` and `martingale/alarms` into TRL's metrics (so
+Weights & Biases shows them), and raises on an error-level alarm unless you pass
+`halt_on_error=False`. Alarms, with thresholds in `AlarmConfig`:
+
+| Alarm | What it means | Level |
+|---|---|---|
+| `weights_unchanged` | a generation ran under the same trainer weights as the previous one although optimizer steps happened: frozen model, lr 0, broken optimizer (exact, from the record) | error |
+| `stale_server` | the lag-0 engine floor jumped 10x right after a new generation: tokens the trainer thinks are fresh behave as stale; the inference server is likely serving old weights (a proxy, the record holds the trainer's digest, not the server's) | error |
+| `negative_lag` | tokens scored by an older step than generated them: resume mislabel or server ahead of trainer | error |
+| `unmatched` | more than 1% of loss rows could not be matched to a recorded sequence | error |
+| `floor_jump` | lag-0 floor 3x its trailing median: engine config, dtype or server settings changed | warn |
+| `ess_collapse` | effective sample size under 30% (error under 10%) in a lag bucket holding over 10% of the step's tokens | warn / error |
+| `span` | over 5% of new sequences span more than two weight revisions | warn |
+
+Each checkpoint gets a `martingale_head.txt` so a resumed run anchors on the right head.
+
 Per batch row it records the unpadded prompt, every completion token, the
 behavior log-prob bits (vLLM's sampling log-probs when present, else TRL's
 old log-probs, else a no-grad pass; which one is bound into the revision), a

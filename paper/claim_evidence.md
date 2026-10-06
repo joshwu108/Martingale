@@ -32,6 +32,7 @@ named `results/*.json` file; `uv run pytest` is the check for test-backed rows.
 | Torch reference corrections agree with the exact weight functions; float32 clip flips reproduced | ALIVE | `tests/test_corrections.py` | `uv run pytest tests/test_corrections.py` | agreement tested at 1e-9 on 200 seeded pairs |
 | `martingale demo` runs record + checker + report + bench in under 60 s without torch | ALIVE | `tests/test_demo.py` | `uv run martingale demo` | synthetic log-probs, not a model |
 | TLA+: `RevisionPin` holds `PinInvariant`, `RevisionPinWeakened` violates it | ALIVE (CI) | `spec/RevisionPin.cfg`, `spec/RevisionPinWeakened.cfg`, `.github/workflows/ci.yml` job `tla` | `TLC_JAR=... bash spec/check.sh` | TLC is not installed locally; the CI job is the regenerating step (added 2026-10-06, first run pending) |
+| Live doctor: incremental diagnosis equals the full decomposition exactly; seven alarms fire once each on records built to trigger them; metrics land in TRL's log; a skipped weight update halts a fake run | ALIVE (fake trainer) | `tests/test_incremental.py`, `tests/test_alarms.py`, `tests/test_trl_monitor.py` | `uv run pytest tests/test_incremental.py tests/test_alarms.py tests/test_trl_monitor.py` | thresholds are heuristics; `stale_server` is a proxy (`docs/nonclaims.md`) |
 
 ## Known gaps
 

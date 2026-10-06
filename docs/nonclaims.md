@@ -92,3 +92,18 @@ Every result is scoped to the constraints below.
   tokens. No claim of veRL or Lightning integration beyond that.
 - History: until 2026-10-06 this layer was a prototype whose ledger the checker
   rejected. `tests/test_prod_checker.py` records the fix.
+
+## Live diagnosis and alarms (`martingale.diagnostics.alarms`, TRL callback)
+
+- Alarm thresholds (floor jump 3x, stale-server proxy 10x, ESS 30%/10%, span 5%,
+  unmatched 1%, 32 lag-0 tokens minimum) are heuristics chosen before any real
+  run existed. They are configuration, not findings, and should be revisited
+  against the first vLLM run.
+- `stale_server` is a proxy. The record holds the trainer's weights digest at
+  generation time, not the inference server's, so a server serving old weights
+  is inferred from the lag-0 floor jumping, not observed. `weights_unchanged`
+  is exact but detects a trainer whose weights did not change, which is a
+  different fault.
+- Percentiles in the live diagnosis come from a bounded reservoir (4096 ratios
+  per lag bucket); means, maxima and shares are exact.
+- The monitor has been exercised against a fake trainer only.

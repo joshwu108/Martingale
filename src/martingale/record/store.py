@@ -153,6 +153,16 @@ class TokenLedger:
     def count_sequences(self) -> int:
         return self._con.execute("SELECT COUNT(*) FROM sequences").fetchone()[0]
 
+    def sequences_since(self, rowid: int) -> list[tuple[int, SequenceRecord]]:
+        """Sequences inserted after `rowid`, in insertion order (for incremental diagnosis)."""
+        rows = self._con.execute("SELECT rowid, record_json FROM sequences WHERE rowid > ? ORDER BY rowid", (rowid,)).fetchall()
+        return [(rid, SequenceRecord.from_dict(json.loads(r))) for rid, r in rows]
+
+    def scores_since(self, rowid: int) -> list[tuple[int, ScoreRecord]]:
+        """Scores inserted after `rowid`, in insertion order."""
+        rows = self._con.execute("SELECT rowid, record_json FROM scores WHERE rowid > ? ORDER BY rowid", (rowid,)).fetchall()
+        return [(rid, ScoreRecord.from_dict(json.loads(r))) for rid, r in rows]
+
     # ---- scores ---------------------------------------------------------------
 
     def last_score_digest(self, sequence_digest: str) -> str:
