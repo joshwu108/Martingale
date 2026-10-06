@@ -14,7 +14,10 @@ from dataclasses import dataclass
 from fractions import Fraction
 from typing import Optional
 
-import torch
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # torch is optional at import time
+    import torch
 
 
 @dataclass
@@ -26,7 +29,7 @@ class IsWeightResult:
 def compute_is_weights(
     log_pi: torch.Tensor,
     log_b: torch.Tensor,
-    dtype: torch.dtype = torch.float32,
+    dtype: torch.dtype | None = None,
     return_named: bool = False,
 ) -> torch.Tensor | IsWeightResult:
     """
@@ -41,6 +44,9 @@ def compute_is_weights(
     Returns:
         Tensor of IS weights, or IsWeightResult if return_named=True.
     """
+    import torch
+
+    dtype = dtype or torch.float32
     log_pi = log_pi.to(dtype)
     log_b = log_b.to(dtype)
     log_ratios = log_pi - log_b
@@ -59,6 +65,8 @@ def clip_is_weights(
 
     Differentiable: gradients flow through the unclipped region.
     """
+    import torch
+
     return torch.clamp(weights, min=1.0 - eps, max=1.0 + eps)
 
 

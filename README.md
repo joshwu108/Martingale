@@ -2,12 +2,15 @@
 
 **Exact off-policy staleness accounting for asynchronous policy-gradient RL**
 
-> Status: **M7 complete** — all milestones implemented. Observatory server in development.
+> Status: research milestones M1–M7 complete with committed evidence. The production
+> layer (`prod/`, `integrations/`, dashboard) is a **prototype sketch whose ledger the
+> independent checker currently rejects** — see `docs/nonclaims.md`, "Production layer".
+> A verifiable token-level record for LLM RL is the next milestone.
 
 ## What this is
 
-`martingale` is a correctness-oriented research codebase **and production toolchain**
-for the learner/algorithm side of asynchronous reinforcement learning. Modern online-RL
+`martingale` is a correctness-oriented research codebase (with a production layer in
+progress) for the learner/algorithm side of asynchronous reinforcement learning. Modern online-RL
 pipelines (veRL, TRL, Lightning-RL) run actors and learners asynchronously: trajectories
 are generated under behavior-policy revisions that lag the learner's current policy,
 sometimes with *mixed* revisions inside a single trajectory when weights update mid-rollout.
@@ -16,7 +19,8 @@ This is the missing accountability layer:
 
 - Every action carries an **exact behavior probability** bound to a **hash-attested revision digest**.
 - IS weights are computed against the precise policy that generated each action — no approximation.
-- An **independent checker daemon** continuously audits the ledger and emits Prometheus metrics.
+- An **independent checker** re-derives every probability and draw from the revision store
+  and rejects tampering; a daemon wraps it and emits Prometheus metrics.
 - The **true expected gradient** is verifiable by exhaustive exact-arithmetic enumeration,
   so that staleness bias becomes a machine-checked rational identity — not a noisy anecdote.
 
@@ -50,6 +54,48 @@ confirming boundary flips exist. The zero-flip results for certain variants like
 reflect insufficient candidate count rather than a true absence — the full production
 run (10^5 candidates) should resolve this. This is reported fully per the preregistered
 descriptive question obligation.
+
+## Test your own estimator (exact, no floats)
+
+```python
+from fractions import Fraction
+from martingale.exact import check_unbiased, defendants
+
+report = check_unbiased(defendants.token_ppo_clip(eps=Fraction(1, 5)), n_configs=20, lags=(1, 4, 8))
+report.all_unbiased                 # False
+report.certificates[-1].bias        # exact rational bias vector, (state, action) -> Fraction
+report.certificates[-1].rel_sq_bias # ||bias||^2 / ||grad||^2, exact
+
+# Your estimator: any callable (traj, target, behavior) -> {(state, action): Fraction}
+report = check_unbiased(my_estimator, name="mine")
+```
+
+Built-in defendants come in two families: `seq_*` weight the whole trajectory by the
+sequence ratio w = prod_t pi/b (the textbook object), `token_*` weight each token by its own
+ratio r_t (what PPO / TIS / MIS / CISPO implementations actually do). Variants:
+`unweighted`, `seq_is`, `token_is`, `{seq,token}_truncated_is` (TIS),
+`{seq,token}_masked_is` (MIS / IcePop-style), `{seq,token}_ppo_clip`, `{seq,token}_cispo`.
+Committed certificates over 20 seeded MDPs x lags {0,1,2,4,8} are in
+`results/estimator_bench_report.json` (`uv run python -m campaigns.estimator_bench`):
+
+| Defendant | lag 0 | lag 1 | lag 2 | lag 4 | lag 8 |
+|---|---|---|---|---|---|
+| unweighted (ignore staleness) | 20/20 | 0/20 | 0/20 | 0/20 | 0/20 |
+| seq_is (sequence-level IS-REINFORCE) | 20/20 | 20/20 | 20/20 | 20/20 | 20/20 |
+| token_is (per-token ratio only) | 20/20 | 0/20 | 0/20 | 0/20 | 0/20 |
+| seq_truncated_is(cap=2) | 20/20 | 20/20 | 20/20 | 16/20 | 7/20 |
+| token_truncated_is(cap=2) | 20/20 | 0/20 | 0/20 | 0/20 | 0/20 |
+| seq_masked_is(1/2, 2) | 20/20 | 13/20 | 7/20 | 3/20 | 2/20 |
+| token_masked_is(1/2, 2) | 20/20 | 0/20 | 0/20 | 0/20 | 0/20 |
+| seq_ppo_clip(eps=1/5) | 20/20 | 0/20 | 2/20 | 0/20 | 0/20 |
+| token_ppo_clip(eps=1/5) | 20/20 | 0/20 | 0/20 | 0/20 | 0/20 |
+| seq_cispo(eps=1/5) | 20/20 | 0/20 | 2/20 | 0/20 | 0/20 |
+| token_cispo(eps=1/5) | 20/20 | 0/20 | 0/20 | 0/20 | 0/20 |
+
+Cells are "configs certified exactly unbiased". Sequence-level truncation is exactly unbiased
+until some trajectory ratio crosses the cap; every per-token scheme, with a trajectory-level
+advantage, is biased from the first stale step, clipped or not. Scope is the tiny tabular
+family in `docs/nonclaims.md`; nothing here transfers to softmax policies by itself.
 
 ## Non-claims
 
@@ -93,7 +139,7 @@ uv run python -m campaigns.mutation
 uv run python -m campaigns.interleave
 ```
 
-## Observatory dashboard (coming)
+## Observatory dashboard (prototype)
 
 ```bash
 # Initialise a workspace
@@ -104,13 +150,21 @@ martingale serve --dir ./run_workspace --port 7373
 # → http://127.0.0.1:7373
 ```
 
+**Honesty note:** the dashboard reads the SQLite workspace written by the prototype
+`prod.AsyncActor`, whose records the independent checker rejects (see non-claims).
+Until the token-record schema lands, treat every number it shows as unverified.
+
 The dashboard shows:
 - Revision timeline and per-actor staleness histogram
 - IS weight distribution (mean, p95, p99) and clip-boundary flip count
 - Checker daemon status (forgeries detected / trajectories verified)
 - Live staleness scaling chart (T3 monotone-bias indicator)
 
-## Framework integrations
+## Framework hooks (prototype — publish checkpoint digests only)
+
+These classes compute a content-addressed digest of a model's weights after each
+optimizer step. They do **not** yet record tokens or behavior log-probs, and they do
+not call TRL, veRL or Lightning APIs; a real TRL `GRPOTrainer` integration is planned.
 
 ```python
 # TRL (HuggingFace)
@@ -127,12 +181,15 @@ with actor.pin_revision(checkpoint_digest) as ctx:
     ctx.commit_episode(episode_id)
 ```
 
-## Verify a training run
+## Verify a run
 
 ```bash
 martingale verify --dir ./run_workspace --seed my-training-seed
-# → All 1247 trajectories verified clean.
 ```
+
+Today this only verifies ledgers written by the exact research pipeline
+(`campaigns/e2e_demo.py`). Ledgers written by the prototype production actor fail
+verification by construction; `tests/test_prod_checker.py` pins that fact.
 
 ## Repository layout
 
@@ -157,6 +214,7 @@ martingale/
     revision.py          # content-addressed revision store (durable, atomic writes)
     ledger.py            # hash-chained trajectory attestations (mixed-revision aware)
     pipeline.py          # multi-process actor/learner with pin-before-draw protocol
+    exact/               # check_unbiased(): exact test bench for user estimators + built-in defendants
   checker/
     verify.py            # independent ledger verifier (imports nothing from src/)
   campaigns/
@@ -167,7 +225,8 @@ martingale/
     mutation.py          # ledger-forgery campaign: 72 mutants, 100% rejection
     interleave.py        # T5: scripted-interleaving + SIGKILL crash-cut campaign
     e2e_demo.py          # M7: full end-to-end demonstration
-  tests/                 # 98 pytest tests (TDD, all green)
+    estimator_bench.py   # exact bias certificates for TIS / MIS / PPO-clip / CISPO
+  tests/                 # 240 pytest tests (TDD, all green; one strict xfail pinning the prod defect)
   results/               # committed evidence artifacts (JSON reports)
     identity_report.json
     mutation_report.json
@@ -175,6 +234,7 @@ martingale/
     boundary_report.json
     interleave_report.json
     e2e_report.json
+    estimator_bench_report.json
 ```
 
 ## Policy parameterization (Option A)

@@ -12,10 +12,11 @@ from __future__ import annotations
 
 import hashlib
 import io
-from typing import Union
+from typing import TYPE_CHECKING, Union
 
-import torch
-import torch.nn as nn
+if TYPE_CHECKING:  # torch is optional at import time
+    import torch
+    import torch.nn as nn
 
 from martingale.revision import Revision
 from martingale.store.sqlite import SQLiteRevisionStore
@@ -28,6 +29,9 @@ def checkpoint_digest(model_or_state_dict: Union[nn.Module, dict]) -> str:
     Deterministic: same weights → same digest. Uses PyTorch's canonical
     state dict serialization for byte-level stability.
     """
+    import torch
+    import torch.nn as nn
+
     if isinstance(model_or_state_dict, nn.Module):
         state_dict = model_or_state_dict.state_dict()
     else:

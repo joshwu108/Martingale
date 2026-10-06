@@ -28,7 +28,6 @@ from martingale.estimators import (
     ppo_clipped_gradient,
 )
 from martingale.mdp import MDP, feasibility_count
-from martingale.policy import RationalPolicy, gradient_ascent_step
 from martingale.rational import fraction_to_str
 
 
@@ -37,90 +36,13 @@ CAMPAIGN_SEED = b"martingale-identity-campaign-v1"
 N_CONFIGS = 40
 
 
-def _seeded_fraction(seed: bytes, lo_num: int, lo_den: int,
-                     hi_num: int, hi_den: int) -> Fraction:
-    """Generate a deterministic rational in [lo, hi] from seed bytes."""
-    h = int.from_bytes(hashlib.blake2b(seed, digest_size=8).digest(), "big")
-    lo = Fraction(lo_num, lo_den)
-    hi = Fraction(hi_num, hi_den)
-    # Map h to [0, 1) as a rational, then scale
-    t = Fraction(h, 2**64)
-    return lo + t * (hi - lo)
-
-
-def _make_rational_simplex(seed: bytes, n: int) -> dict[int, Fraction]:
-    """Generate a random rational simplex of size n, summing to exactly 1."""
-    # Generate n random positive rationals, then normalize exactly
-    raws = []
-    for i in range(n):
-        s = hashlib.blake2b(seed + i.to_bytes(4, "big"), digest_size=8).digest()
-        v = Fraction(int.from_bytes(s, "big") + 1, 2**64)  # in (0, 1]
-        raws.append(v)
-    total = sum(raws)
-    return {i: r / total for i, r in enumerate(raws)}
-
-
-def _make_mdp(seed: bytes, n_states: int, n_actions: int, horizon: int) -> MDP:
-    """Generate a random rational MDP from a seed."""
-    states = list(range(n_states))
-    actions = list(range(n_actions))
-
-    transitions = {}
-    rewards = {}
-    for s in states:
-        transitions[s] = {}
-        rewards[s] = {}
-        for a in actions:
-            s_seed = hashlib.blake2b(
-                seed + f"T_{s}_{a}".encode(), digest_size=16
-            ).digest()
-            transitions[s][a] = _make_rational_simplex(s_seed, n_states)
-            rewards[s][a] = {}
-            for sp in states:
-                r_seed = hashlib.blake2b(
-                    seed + f"R_{s}_{a}_{sp}".encode(), digest_size=8
-                ).digest()
-                # Reward in {0, 1, 2, 3} as Fraction
-                r_val = int.from_bytes(r_seed[:1], "big") % 4
-                rewards[s][a][sp] = Fraction(r_val)
-
-    return MDP(states=states, actions=actions, transitions=transitions,
-               rewards=rewards, horizon=horizon)
-
-
-def _make_policy(seed: bytes, states: list[int], actions: list[int]) -> RationalPolicy:
-    """Generate a random rational simplex policy."""
-    table = {}
-    for s in states:
-        s_seed = hashlib.blake2b(
-            seed + f"PI_{s}".encode(), digest_size=16
-        ).digest()
-        table[s] = _make_rational_simplex(s_seed, len(actions))
-        # Remap keys from 0..n to actual action indices
-        table[s] = {actions[i]: p for i, p in table[s].items()}
-    return RationalPolicy(table)
-
-
-def _make_stale_policy(
-    target: RationalPolicy,
-    mdp: MDP,
-    n_steps: int,
-    alpha: Fraction,
-    action_seq_seed: bytes,
-) -> RationalPolicy:
-    """Generate a behavior policy by taking n gradient ascent steps from target."""
-    policy = target
-    for step_i in range(n_steps):
-        # Pick a random state/action to ascent on
-        s_seed = hashlib.blake2b(
-            action_seq_seed + step_i.to_bytes(4, "big"), digest_size=4
-        ).digest()
-        s_idx = int.from_bytes(s_seed[:2], "big") % len(mdp.states)
-        a_idx = int.from_bytes(s_seed[2:4], "big") % len(mdp.actions)
-        s = mdp.states[s_idx]
-        a = mdp.actions[a_idx]
-        policy = gradient_ascent_step(policy, s, a, G=Fraction(1), alpha=alpha)
-    return policy
+from martingale.exact.random_mdp import (  # shared with martingale.exact (Phase 4-C)
+    make_mdp as _make_mdp,
+    make_policy as _make_policy,
+    make_rational_simplex as _make_rational_simplex,
+    make_stale_policy as _make_stale_policy,
+    seeded_fraction as _seeded_fraction,
+)
 
 
 def run_identity_campaign(n_configs: int = N_CONFIGS, verbose: bool = True) -> dict:

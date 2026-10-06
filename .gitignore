@@ -37,3 +37,6 @@ Thumbs.db
 
 # Project-specific
 plan.md
+
+# Private planning docs (same convention as Reservoir)
+planning/

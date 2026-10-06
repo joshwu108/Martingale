@@ -1,0 +1,32 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python: ["3.10", "3.11", "3.12", "3.13"]
+        include:
+          - os: macos-latest
+            python: "3.12"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python }}
+          enable-cache: true
+      - name: Install (core + dev group, no GPU)
+        run: uv sync --locked
+      - name: Checker import isolation
+        run: uv run python scripts/check_imports.py
+      - name: Core imports without torch
+        run: uv run --no-group dev --isolated python -c "import martingale, martingale.prod.actor, martingale.prod.weights, martingale.prod.revision_publisher; print('ok')"
+      - name: Tests
+        run: uv run pytest tests/ -q

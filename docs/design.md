@@ -334,3 +334,147 @@ See `docs/nonclaims.md` for the full list.  Key non-claims:
 | Decision | Options | Status |
 |---|---|---|
 | Policy parameterization | A (simplex), B (integerized softmax), C (polynomial) | **Option A — SIGNED OFF 2026-08-31** |
+
+---
+
+## 7. Token-level attested record for LLM RL (Phase 1 — AWAITING SIGN-OFF)
+
+Written 2026-10-05 per `planning/2026-10-05-phase1-researcher-tool.md`. This
+section replaces the prototype in `prod/` (see `docs/nonclaims.md`,
+"Production layer"). Nothing in sections 1–6 changes: the exact core keeps
+`Revision`/`ActionRecord` for rational-table policies. The new types live
+beside them and share the same chain, digest and durability discipline.
+
+### 7.1 Two revision kinds, one store
+
+| Kind | Digest over | Checker can recompute probabilities? |
+|---|---|---|
+| `Revision` (existing) | canonical rational table | yes, exactly |
+| `LLMRevision` (new) | manifest below | no (weights are not in the store); it recomputes **binding** |
+
+`LLMRevision` manifest, canonical JSON (sorted keys, no whitespace), digest =
+BLAKE2b-256 of the bytes:
+
+```
+{
+  "kind": "llm",
+  "weights_digest":   "<64 hex>",   # 7.2
+  "tokenizer_digest": "<64 hex>",   # BLAKE2b-256 of tokenizer.json bytes (or vocab+merges concatenated)
+  "sampler":          {...},        # 7.3, canonical JSON object
+  "parent_digest":    "<64 hex>" | GENESIS,
+  "step":             <int>         # learner global step at publish
+}
+```
+
+`step` and `parent_digest` are inside the digest on purpose: two publishes of
+identical weights at different learner steps are different revisions, because
+staleness is measured in learner steps, not in weight distance. Weights are
+stored **by reference** (`weights_uri`, outside the digest) and never copied.
+
+### 7.2 Weights digest
+
+BLAKE2b-256 over the concatenation, in sorted parameter-name order, of
+`name || "\x00" || dtype || "\x00" || shape-as-"d0,d1,..." || "\x00" || raw little-endian bytes || "\xff"`.
+Not `torch.save` (its pickle framing changes across torch versions, so the
+same weights would digest differently; the current `checkpoint_digest` has
+this bug). Tensors are digested in their stored dtype; no cast to float32
+(casting bf16→f32 would make two different checkpoints collide only if they
+differ below f32 resolution, but it also hides which dtype trained).
+Sharded/FSDP state dicts are gathered to CPU before digesting; the digest is
+of the logical tensor, not the shard layout.
+
+### 7.3 Sampler config
+
+Canonical JSON with exactly these keys (missing → `null`), all bound into the
+revision digest: `temperature, top_p, top_k, min_p, repetition_penalty,
+max_tokens, logprobs_mode, dtype, engine, engine_version, tensor_parallel,
+seed_policy`. `logprobs_mode` records whether the engine returned raw or
+post-sampling-filter log-probs (vLLM's `logprobs_mode`), because the ratio
+semantics differ. Any change of any key is a new revision.
+
+### 7.4 `TokenRecord`
+
+```
+{
+  "revision_digest": "<64 hex>",     # the LLMRevision pinned for THIS token
+  "position":        <int>,          # 0-based index within the generated continuation
+  "token_id":        <int>,
+  "logprob_bits":    "f32:<8 hex>" | "f64:<16 hex>",   # IEEE-754 bits, exact
+  "topk":            [[<token_id>, "<bits>"], ...] | null,
+  "prev_digest":     "<64 hex>"
+}
+```
+
+The behavior log-prob is a float the engine produced. The record binds its
+**bits**, not a rational approximation (`limit_denominator` in the prototype
+loses information and is gone). Converting bits→`Fraction` is exact and is
+done by the diagnostics, not by the record. `topk` is optional and off by
+default (record volume); when present it makes zero-lag mismatch diagnosis
+per token possible.
+
+Per-token `revision_digest` makes in-flight weight updates first class: a
+sequence whose tokens carry two or more digests is a **mixed-revision
+sequence** and needs no special record. Diagnostics count them.
+
+### 7.5 `SequenceRecord`
+
+```
+{
+  "actor_id":        <int>,
+  "sequence_id":     <str>,          # caller-supplied, unique per actor
+  "prompt_digest":   "<64 hex>",     # BLAKE2b-256 of prompt token ids as little-endian int32 bytes
+  "prompt_len":      <int>,
+  "records":         [TokenRecord, ...],
+  "reward_bits":     "<bits>" | null,# scalar sequence reward, float bits
+  "engine_request_id": <str> | null, # for joining to engine logs; outside digest
+  "prev_sequence_digest": "<64 hex>",
+  "terminal_digest": "<64 hex>"      # digest of the last TokenRecord
+}
+```
+
+Sequence digest = BLAKE2b-256 over canonical JSON of all fields except
+`engine_request_id`. Per-actor chain via `prev_sequence_digest`, as today.
+
+### 7.6 What the checker verifies, in three tiers
+
+| Tier | Needs | Verifies | Verdict |
+|---|---|---|---|
+| 1 binding (always) | ledger export + revision manifests | every digest recomputes; chains unbroken; every `revision_digest` exists; positions contiguous from 0; every token's revision has the same `sampler` and `tokenizer_digest` as the sequence's first token unless the manifest chain links them (parent chain) | **forgery / clean** |
+| 2 recompute (optional) | weights at `weights_uri` + a reference engine | re-derives log-probs for each token, reports per-token |Δ|, max, and the count of clip-side flips at ε ∈ {0.1, 0.2} against the recorded bits | **report only, never a verdict** (engines are nondeterministic) |
+| 3 draw (not possible) | — | that the token was actually sampled from the recorded distribution | **explicit non-claim** (engine RNG is not keyed; see nonclaims) |
+
+Tier 1 stays in `checker/`, importing nothing from `src/`. Tier 2 lives in
+`src/martingale/recompute/` because it needs torch; the checker calls it
+through a subprocess interface and treats its output as data.
+
+### 7.7 Storage and export
+
+Live: SQLite WAL (`revisions.db` gains a `manifest_json` column and a `kind`
+column; `ledger.db` gains `sequences` and `tokens` tables). Export for the
+checker: one JSON file per sequence, one manifest file per revision, same
+layout as `export_for_checker` today; optional `.zst`. Durability: same
+`F_FULLFSYNC`/`fsync` + atomic rename as `revision.py`.
+
+### 7.8 Record volume
+
+Per token without `topk`: ~230 bytes JSON, ~60 bytes in SQLite. A 7B GRPO run
+at 8 samples × 1k tokens × 512 prompts per step is 4M tokens/step ≈ 250 MB
+SQLite per step. Mitigations in order: (1) per-sequence revision digest
+run-length encoding (a sequence with one revision stores it once; a mixed one
+stores the switch positions), (2) `logprob_bits` as a packed little-endian
+array per sequence with one digest, (3) sampling: record every sequence's
+header and every Nth sequence's tokens, declared in the manifest. (1) and (2)
+are schema-compatible with 7.4 (the canonical bytes are defined over the
+expanded form). Decide (3) only if a real run needs it.
+
+### 7.9 Decisions needed for sign-off
+
+| # | Decision | Recommendation |
+|---|---|---|
+| D1 | Weights digest over raw tensor bytes (7.2) vs `torch.save` | raw bytes |
+| D2 | `step` + `parent_digest` inside the revision digest | yes |
+| D3 | `topk` off by default | yes |
+| D4 | Store bits in the engine's dtype (f32 or f64) with a tag | yes |
+| D5 | Rewards: per-sequence scalar bits only, per-token optional later | yes |
+| D6 | Run-length encoding of revision digest within a sequence (7.8-1) in Phase 1, or later | Phase 1, it is cheap |
+| D7 | Tier 2 recompute shipped in Phase 1 or deferred to Phase 3 (needs a real engine) | defer to Phase 3 |

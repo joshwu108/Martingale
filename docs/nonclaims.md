@@ -51,3 +51,19 @@ Every result is scoped to the constraints below.
 - The implementation in `pipeline.py` is a single-host prototype using
   Python `multiprocessing`. No claim is made about correctness under
   OS-level scheduling policies other than those tested.
+
+## Production layer (`src/martingale/prod/`, `integrations/`) — as of 2026-10-05
+
+- The production actor, revision publisher and framework shims are a
+  **prototype API sketch**, not a verified toolchain. A ledger written by
+  `prod.AsyncActor` is **rejected** by the independent checker: the publisher
+  stores a checkpoint as a 1x1 placeholder table, the actor samples with
+  `torch.multinomial` rather than the keyed draw and writes the state hash as
+  the draw integer, and float log-probs are rounded through
+  `limit_denominator`. `tests/test_prod_checker.py` documents this as a
+  strict expected failure.
+- The TRL, veRL and Lightning modules publish checkpoint digests only. They
+  do not call any framework API and no claim of framework integration is made.
+- No claim is made that exact-arithmetic results transfer to softmax or
+  neural-network policies on the production path; the production path has no
+  exact guarantees until the token-record schema (Phase 1) lands.

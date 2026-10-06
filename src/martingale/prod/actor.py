@@ -20,8 +20,6 @@ from dataclasses import dataclass, field
 from fractions import Fraction
 from typing import Optional
 
-import torch
-
 from martingale.draw import DrawResult
 from martingale.ledger import ActionRecord, GENESIS_DIGEST
 from martingale.store.sqlite import SQLiteLedger
@@ -106,6 +104,8 @@ class AsyncActor:
         Returns:
             dict with action, log_prob, revision_digest
         """
+        import torch  # optional dependency: only needed on the production path
+
         if self._pinned is None:
             raise ProtocolViolation(
                 "sample_and_record() called without an active pin. "
@@ -118,7 +118,6 @@ class AsyncActor:
         log_prob_b = log_probs[action].item()
 
         # Encode state as a hash of the observation tensor
-        import struct
         obs_list = obs.detach().cpu().float().tolist()
         obs_bytes = struct.pack(f"{len(obs_list)}f", *obs_list)
         state_hash = int.from_bytes(
@@ -146,6 +145,7 @@ class AsyncActor:
         """Convert accumulated steps to ActionRecords and write to ledger."""
         if not steps:
             return
+        import torch  # optional dependency: only needed on the production path
 
         records = []
         prev = self._prev_digest
