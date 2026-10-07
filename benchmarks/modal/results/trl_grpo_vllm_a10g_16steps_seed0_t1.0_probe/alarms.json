@@ -1,0 +1,137 @@
+{
+ "alarms": [
+  {
+   "kind": "floor_jump",
+   "level": "warn",
+   "step": 13,
+   "message": "lag-0 floor is 3.4x its trailing median (2.74e-02 vs 8.00e-03): engine config, dtype or server settings may have changed",
+   "evidence": {
+    "floor": 0.027382470249325375,
+    "trailing_median": 0.007998936653958566,
+    "factor": 3.423263795416377
+   }
+  }
+ ],
+ "per_step_metrics": [
+  {
+   "martingale/floor_mean_abs_log_ratio": 0.007998936653958566,
+   "martingale/confident_disagreements_lag0": 0.0,
+   "martingale/ess_fraction_lag0": 0.9977636221538987,
+   "martingale/mean_abs_log_ratio_lag0": 0.007998936653958566,
+   "martingale/tokens_lag0": 34.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/ess_fraction_lag1": 0.9999946654604662,
+   "martingale/mean_abs_log_ratio_lag1": 0.0012574830325320363,
+   "martingale/tokens_lag1": 30.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/ess_fraction_lag2": 0.9411979178651539,
+   "martingale/mean_abs_log_ratio_lag2": 0.5113013579686078,
+   "martingale/tokens_lag2": 34.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/ess_fraction_lag3": 0.9999944175317065,
+   "martingale/mean_abs_log_ratio_lag3": 0.0013074279141922793,
+   "martingale/tokens_lag3": 30.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/floor_mean_abs_log_ratio": 0.0001260313446336012,
+   "martingale/confident_disagreements_lag0": 0.0,
+   "martingale/ess_fraction_lag0": 0.9999999620744562,
+   "martingale/mean_abs_log_ratio_lag0": 0.0001260313446336012,
+   "martingale/tokens_lag0": 27.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/ess_fraction_lag1": 0.9999332020519833,
+   "martingale/mean_abs_log_ratio_lag1": 0.006849805664638426,
+   "martingale/tokens_lag1": 29.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/ess_fraction_lag2": 0.9913108981979355,
+   "martingale/mean_abs_log_ratio_lag2": 0.07303013695814621,
+   "martingale/tokens_lag2": 27.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/ess_fraction_lag3": 0.9660999967245654,
+   "martingale/mean_abs_log_ratio_lag3": 0.18199952595524996,
+   "martingale/tokens_lag3": 29.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/floor_mean_abs_log_ratio": 0.0026846784212466446,
+   "martingale/confident_disagreements_lag0": 0.0,
+   "martingale/ess_fraction_lag0": 0.9999792520672101,
+   "martingale/mean_abs_log_ratio_lag0": 0.0026846784212466446,
+   "martingale/tokens_lag0": 30.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/ess_fraction_lag1": 0.8882826913366627,
+   "martingale/mean_abs_log_ratio_lag1": 0.32559650750945657,
+   "martingale/tokens_lag1": 31.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/ess_fraction_lag2": 0.814534012060369,
+   "martingale/mean_abs_log_ratio_lag2": 0.7553769557006187,
+   "martingale/tokens_lag2": 30.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/ess_fraction_lag3": 0.8674334871847249,
+   "martingale/mean_abs_log_ratio_lag3": 0.664120358075413,
+   "martingale/tokens_lag3": 31.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/floor_mean_abs_log_ratio": 0.027382470249325375,
+   "martingale/confident_disagreements_lag0": 0.0,
+   "martingale/ess_fraction_lag0": 0.9965197530630392,
+   "martingale/mean_abs_log_ratio_lag0": 0.027382470249325375,
+   "martingale/tokens_lag0": 33.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/ess_fraction_lag1": 0.9779056347141717,
+   "martingale/mean_abs_log_ratio_lag1": 0.055383468252870986,
+   "martingale/tokens_lag1": 37.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/ess_fraction_lag2": 0.9417704218393522,
+   "martingale/mean_abs_log_ratio_lag2": 0.16336727184137667,
+   "martingale/tokens_lag2": 33.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/ess_fraction_lag3": 0.9022121116885734,
+   "martingale/mean_abs_log_ratio_lag3": 0.12924571199864904,
+   "martingale/tokens_lag3": 37.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  }
+ ]
+}

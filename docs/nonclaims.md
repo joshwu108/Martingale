@@ -67,14 +67,16 @@ Every result is scoped to the constraints below.
   out of band, a forger who re-signs a whole chain, deletes the last sequence
   of an actor, or drops an unreferenced revision is not detected
   (`results/mutation_tokens_report.json`, column `rejected_unanchored`).
-- **The TRL integration has run twice for real** (2026-10-06, Qwen2.5-0.5B,
-  TRL 1.13, vLLM 0.28, 16 steps each; `benchmarks/modal/results/`), once in
-  colocate mode and once in server mode. The adapter version that ran had two
-  bugs (second `num_iterations` pass not scored; database copied before the
-  WAL checkpoint), fixed the same day and covered by tests, but not yet re-run.
-  TRL's server mode on Modal hangs in the NCCL weight-transfer handshake more
-  often than not (one success in four attempts here, zero in Reservoir's
-  eleven probes); colocate mode is the recommended path.
+- **The TRL integration has run four times for real** (2026-10-06, Qwen2.5-0.5B,
+  TRL 1.13, vLLM 0.28, 16 steps each; `benchmarks/modal/results/`), three in
+  colocate mode and once in server mode. The adapter version of the first two
+  runs had two bugs (second `num_iterations` pass not scored; database copied
+  before the WAL checkpoint), fixed the same day, covered by tests and re-run.
+  The server-mode run had zero gradient at every step, so it is evidence of
+  the plumbing only, not of any floor. TRL's server mode on Modal hangs in the
+  NCCL weight-transfer handshake more often than not (one success in four
+  attempts here, zero in Reservoir's eleven probes); colocate mode is the
+  recommended path.
 - No distributed-filesystem, multi-host, or performance claims for the record.
   Volume: about 250 bytes per token in JSON, less in SQLite; no compression
   or sampling of sequences is implemented. The diagnostics keep one float per
@@ -108,15 +110,26 @@ Every result is scoped to the constraints below.
   different fault.
 - Percentiles in the live diagnosis come from a bounded reservoir (4096 ratios
   per lag bucket); means, maxima and shares are exact.
-- The monitor ran on three real runs. `stale_server` now fires on confident
+- The monitor ran on four real runs. `stale_server` now fires on confident
   disagreement (engine >= 50% sure, trainer > 2 nats lower at lag 0), which
-  bf16 rounding cannot produce; the thresholds (ln 0.5, 2 nats) are chosen
-  for that reason, not fitted. It says the engine used different weights or
-  inputs; it does not say why. `martingale recompute` needs a checkpoint and
-  the prompt ids in the record (stored by default, outside the digest).
-- The stale-engine finding on TRL 1.13 colocate + vLLM 0.28 is one model,
-  one seed, one version pair; the mechanism inside TRL's weight sync has not
-  been diagnosed.
+  kernel numerics on the same weights cannot produce; the thresholds (ln 0.5,
+  2 nats) are chosen for that reason, not fitted. It names a symptom, not a
+  cause: stale weights, different inputs, and a trainer forward at a precision
+  the engine's weights cannot represent (an fp32 forward against a bf16 engine,
+  which is what the first run had) all raise it. `martingale recompute` needs a
+  checkpoint and the prompt ids in the record (stored by default, outside the
+  digest); the elementwise sync probe (`benchmarks/modal/sync_probe.py`) is
+  what separates a failed sync from a precision gap, and it is a benchmark
+  script, not part of the library.
+- The "stale engine" reading of the first run was wrong. TRL 1.13's colocate
+  sync was exact on that run (`docs/findings/2026-10-06-trl-colocate-sync.md`);
+  the finding is a precision gap, our configuration, on one model, one seed,
+  one version pair, tensor parallel 1, no sleep mode, no quantization. No claim
+  about the sync under other configurations beyond the code read.
+- The matched-precision engine floor measured here (0.0001 to 0.03 nats mean
+  abs log ratio at temperature 1) is one task and one model; the task saturates
+  the reward and the recipe collapses the policy within 12 steps, so the floor
+  numbers at steps 8 and 12 are measured on a degenerate policy.
 
 ## Replayed rows (`src/martingale/record/replay.py`, replay-buffer provenance)
 
