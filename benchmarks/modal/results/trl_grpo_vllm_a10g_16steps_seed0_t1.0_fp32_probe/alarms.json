@@ -1,0 +1,158 @@
+{
+ "alarms": [
+  {
+   "kind": "stale_server",
+   "level": "error",
+   "step": 5,
+   "message": "3 lag-0 tokens the engine was >=50% sure of are scored >2 nats lower by the trainer: the engine generated from different weights than the trainer scored with (weight sync not applied?) or from a different input. Verify with `martingale recompute` against the trainer's checkpoint.",
+   "evidence": {
+    "n_confident_disagreements": 3,
+    "floor": 0.8072307344875922
+   }
+  },
+  {
+   "kind": "stale_server",
+   "level": "error",
+   "step": 9,
+   "message": "3 lag-0 tokens the engine was >=50% sure of are scored >2 nats lower by the trainer: the engine generated from different weights than the trainer scored with (weight sync not applied?) or from a different input. Verify with `martingale recompute` against the trainer's checkpoint.",
+   "evidence": {
+    "n_confident_disagreements": 3,
+    "floor": 1.028667803858921
+   }
+  },
+  {
+   "kind": "floor_tail",
+   "level": "warn",
+   "step": 13,
+   "message": "lag-0 floor jumped 54.2x after a new generation with the median ratio at 1.0000 and no confident disagreements: low-probability tokens disagree by nats (bf16-vs-fp32 tail effect, worse at temperature 1 and as the policy sharpens). Consider FP16, a bit-exact engine, or masking tail ratios.",
+   "evidence": {
+    "floor": 0.14812429197866805,
+    "trailing_median": 0.0027352522269216075,
+    "factor": 54.15379631931593,
+    "ratio_p50": 1.0000023841859047
+   }
+  }
+ ],
+ "per_step_metrics": [
+  {
+   "martingale/floor_mean_abs_log_ratio": 0.0027352522269216075,
+   "martingale/confident_disagreements_lag0": 0.0,
+   "martingale/ess_fraction_lag0": 0.9998069032032338,
+   "martingale/mean_abs_log_ratio_lag0": 0.0027352522269216075,
+   "martingale/tokens_lag0": 34.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/ess_fraction_lag1": 0.9999930115643116,
+   "martingale/mean_abs_log_ratio_lag1": 0.0017009917801866928,
+   "martingale/tokens_lag1": 30.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/ess_fraction_lag2": 0.9190189907125913,
+   "martingale/mean_abs_log_ratio_lag2": 0.7702180219606821,
+   "martingale/tokens_lag2": 34.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/ess_fraction_lag3": 0.9999365916542401,
+   "martingale/mean_abs_log_ratio_lag3": 0.003039704627978305,
+   "martingale/tokens_lag3": 30.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/floor_mean_abs_log_ratio": 0.8072307344875922,
+   "martingale/confident_disagreements_lag0": 3.0,
+   "martingale/ess_fraction_lag0": 0.8890385401578046,
+   "martingale/mean_abs_log_ratio_lag0": 0.8072307344875922,
+   "martingale/tokens_lag0": 27.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/ess_fraction_lag1": 0.9255996070568282,
+   "martingale/mean_abs_log_ratio_lag1": 0.18963112286949832,
+   "martingale/tokens_lag1": 29.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/ess_fraction_lag2": 0.8980785805249026,
+   "martingale/mean_abs_log_ratio_lag2": 0.352921703552536,
+   "martingale/tokens_lag2": 27.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/ess_fraction_lag3": 0.8287144934685163,
+   "martingale/mean_abs_log_ratio_lag3": 0.9853203022754738,
+   "martingale/tokens_lag3": 29.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/floor_mean_abs_log_ratio": 1.028667803858921,
+   "martingale/confident_disagreements_lag0": 3.0,
+   "martingale/ess_fraction_lag0": 0.8889099874277724,
+   "martingale/mean_abs_log_ratio_lag0": 1.028667803858921,
+   "martingale/tokens_lag0": 27.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/ess_fraction_lag1": 0.8276063182311805,
+   "martingale/mean_abs_log_ratio_lag1": 1.679773342980658,
+   "martingale/tokens_lag1": 29.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/ess_fraction_lag2": 0.888898533325583,
+   "martingale/mean_abs_log_ratio_lag2": 1.114948697255369,
+   "martingale/tokens_lag2": 27.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/ess_fraction_lag3": 0.8275986387651094,
+   "martingale/mean_abs_log_ratio_lag3": 1.761845272123051,
+   "martingale/tokens_lag3": 29.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/floor_mean_abs_log_ratio": 0.14812429197866805,
+   "martingale/confident_disagreements_lag0": 0.0,
+   "martingale/ess_fraction_lag0": 0.24657089705107574,
+   "martingale/mean_abs_log_ratio_lag0": 0.14812429197866805,
+   "martingale/tokens_lag0": 32.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/ess_fraction_lag1": 0.9687025186649799,
+   "martingale/mean_abs_log_ratio_lag1": 0.18681228888180357,
+   "martingale/tokens_lag1": 32.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/ess_fraction_lag2": 0.9626301669334637,
+   "martingale/mean_abs_log_ratio_lag2": 0.3369318686479019,
+   "martingale/tokens_lag2": 32.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/ess_fraction_lag3": 0.9520657622043518,
+   "martingale/mean_abs_log_ratio_lag3": 0.41461885167731083,
+   "martingale/tokens_lag3": 32.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  }
+ ]
+}

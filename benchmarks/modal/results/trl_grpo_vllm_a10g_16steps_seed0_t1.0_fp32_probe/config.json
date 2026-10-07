@@ -1,0 +1,24 @@
+{
+ "model": "Qwen/Qwen2.5-0.5B-Instruct",
+ "vllm": "0.28.0",
+ "trl": "1.13.0",
+ "gpu": "A10G",
+ "vllm_mode": "colocate",
+ "max_steps": 16,
+ "seed": 0,
+ "temperature": 1.0,
+ "batch_invariant": false,
+ "trainer_bf16": false,
+ "num_iterations": 2,
+ "steps_per_generation": 2,
+ "stats": {
+  "generation_calls": 4,
+  "sequences": 64,
+  "tokens": 240,
+  "score_calls": 16,
+  "scored_tokens": 480,
+  "unmatched_rows": 0,
+  "nan_rows": 0,
+  "revisions": 20
+ }
+}

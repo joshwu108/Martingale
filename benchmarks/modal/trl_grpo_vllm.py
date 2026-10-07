@@ -9,7 +9,7 @@ What it produces (under benchmarks/modal/results/<run>/):
   trainer_log.json      TRL's log history
 
 Setup:
-  model   Qwen/Qwen2.5-0.5B-Instruct, trainer in float32, vLLM serves bf16 in-process
+  model   Qwen/Qwen2.5-0.5B-Instruct, fp32 master weights under bf16 autocast, vLLM serves bf16 in-process
   GPU     one A10G; TRL 1.13.0, vLLM 0.28.0
   TRL     use_vllm=True, vllm_mode="colocate", vllm_importance_sampling_correction=False
           (the loss never reads sampling logprobs; the recorder still records them)
@@ -31,9 +31,17 @@ Usage
   modal run benchmarks/modal/trl_grpo_vllm.py --batch-invariant   # deterministic vLLM kernels (colocate: the
                                                                    # override also hits the trainer's backward; may fail)
   modal run benchmarks/modal/trl_grpo_vllm.py --max-steps 24
+  modal run benchmarks/modal/trl_grpo_vllm.py --tag probe            # keep the result dir separate
+  modal run benchmarks/modal/trl_grpo_vllm.py --fp32-trainer         # the first run's misconfiguration
 
-Not run yet by the author (needs Modal credentials and a GPU budget); the
-local test suite covers the integration against a fake trainer only.
+Precision. The trainer runs under bf16 autocast (GRPOConfig bf16=True) so that its
+forward sees the same bf16-rounded weights vLLM holds. The first run (2026-10-06) used
+an fp32 forward (bf16=False) against the bf16 engine: Adam updates of ~1e-5 per weight
+are below the bf16 ulp of most weights, so the synced engine stayed within numerics of
+the initial checkpoint while the fp32 trainer moved by a nat. That looked like a stale
+engine and was not one; see docs/findings/2026-10-06-trl-colocate-sync.md.
+--fp32-trainer reproduces it. Every run also writes sync_probe.json: at each weight
+sync, every vLLM parameter compared elementwise with the trainer's (sync_probe.py).
 """
 from __future__ import annotations
 
@@ -60,6 +68,7 @@ image = (
     .env({"HF_HOME": "/hf_cache", "PYTHONPATH": "/repo/src:/repo"})
     .add_local_dir(str(REPO_ROOT / "src"), "/repo/src")
     .add_local_dir(str(REPO_ROOT / "checker"), "/repo/checker")
+    .add_local_file(str(_here.parent / "sync_probe.py"), "/repo/sync_probe.py")
 )
 app = modal.App("martingale-trl-grpo-vllm")
 hf_cache = modal.Volume.from_name("martingale-hf-cache", create_if_missing=True)
@@ -110,9 +119,11 @@ def _worst_tokens(ledger, tokenizer, n: int = 40) -> list[dict]:
     return rows[:n]
 
 
-@app.function(image=image, gpu=GPU, timeout=60 * 60, volumes={"/hf_cache": hf_cache})
-def run_grpo(max_steps: int = 16, seed: int = 0, temperature: float = 1.0, batch_invariant: bool = False) -> dict:
+@app.function(image=image, gpu=GPU, timeout=60 * 60, memory=32768, volumes={"/hf_cache": hf_cache})
+def run_grpo(max_steps: int = 16, seed: int = 0, temperature: float = 1.0, batch_invariant: bool = False,
+             fp32_trainer: bool = False) -> dict:
     import torch
+    from sync_probe import SyncProbe
     from transformers import AutoModelForCausalLM, AutoTokenizer
     from trl import GRPOConfig
 
@@ -132,7 +143,7 @@ def run_grpo(max_steps: int = 16, seed: int = 0, temperature: float = 1.0, batch
         output_dir=str(work / "out"), seed=seed, max_steps=max_steps, logging_steps=1,
         per_device_train_batch_size=8, gradient_accumulation_steps=1, num_generations=8,
         max_completion_length=16, temperature=temperature, learning_rate=5e-6,
-        num_iterations=2, steps_per_generation=2, report_to=[], save_strategy="no", bf16=False,
+        num_iterations=2, steps_per_generation=2, report_to=[], save_strategy="no", bf16=not fp32_trainer,
         use_vllm=True, vllm_mode="colocate", vllm_gpu_memory_utilization=0.3, vllm_max_model_length=512,
         vllm_importance_sampling_correction=False,
     )
@@ -140,7 +151,10 @@ def run_grpo(max_steps: int = 16, seed: int = 0, temperature: float = 1.0, batch
     trainer = Trainer(model=model, args=args, train_dataset=_addition_dataset(512, seed),
                       reward_funcs=exact_match_reward, processing_class=tok, flight_recorder=flight,
                       halt_on_error=False)       # first real run: record alarms, never lose the data to one
+    probe = SyncProbe(trainer)                   # elementwise vLLM-vs-trainer check at every weight sync
+    print("SYNC_PROBE facts", json.dumps(probe.facts), flush=True)
     trainer.train()
+    sync_probe = probe.summary()
     monitor = trainer.martingale_monitor
     alarms = [{"kind": a.kind, "level": a.level, "step": a.step, "message": a.message, "evidence": a.evidence}
               for a in monitor.alarms]
@@ -155,18 +169,21 @@ def run_grpo(max_steps: int = 16, seed: int = 0, temperature: float = 1.0, batch
     return {
         "head": head, "verify": verify, "report": report, "report_md": render_markdown(report),
         "stats": flight.stats, "log_history": trainer.state.log_history,
-        "alarms": alarms, "per_step_metrics": per_step, "worst_tokens": worst,
+        "alarms": alarms, "per_step_metrics": per_step, "worst_tokens": worst, "sync_probe": sync_probe,
         "tokens_db": (work / "ws" / "tokens.db").read_bytes(),
         "config": {"model": MODEL_ID, "vllm": VLLM_VERSION, "trl": "1.13.0", "gpu": GPU, "vllm_mode": "colocate",
                    "max_steps": max_steps, "seed": seed, "temperature": temperature,
-                   "batch_invariant": batch_invariant, "num_iterations": 2, "steps_per_generation": 2},
+                   "batch_invariant": batch_invariant, "trainer_bf16": not fp32_trainer,
+                   "num_iterations": 2, "steps_per_generation": 2},
     }
 
 
 @app.local_entrypoint()
-def main(max_steps: int = 16, seed: int = 0, temperature: float = 1.0, batch_invariant: bool = False):
-    res = run_grpo.remote(max_steps=max_steps, seed=seed, temperature=temperature, batch_invariant=batch_invariant)
-    tag = f"_t{temperature}" + ("_bi" if batch_invariant else "")
+def main(max_steps: int = 16, seed: int = 0, temperature: float = 1.0, batch_invariant: bool = False,
+         fp32_trainer: bool = False, tag: str = ""):
+    res = run_grpo.remote(max_steps=max_steps, seed=seed, temperature=temperature, batch_invariant=batch_invariant,
+                          fp32_trainer=fp32_trainer)
+    tag = f"_t{temperature}" + ("_bi" if batch_invariant else "") + ("_fp32" if fp32_trainer else "") + (f"_{tag}" if tag else "")
     out = RESULTS_DIR / f"trl_grpo_vllm_a10g_{max_steps}steps_seed{seed}{tag}"
     out.mkdir(parents=True, exist_ok=True)
     (out / "tokens.db").write_bytes(res.pop("tokens_db"))
@@ -177,6 +194,7 @@ def main(max_steps: int = 16, seed: int = 0, temperature: float = 1.0, batch_inv
     (out / "trainer_log.json").write_text(json.dumps(res["log_history"], indent=1))
     (out / "alarms.json").write_text(json.dumps({"alarms": res["alarms"], "per_step_metrics": res["per_step_metrics"]}, indent=1))
     (out / "worst_tokens.json").write_text(json.dumps(res["worst_tokens"], indent=1))
+    (out / "sync_probe.json").write_text(json.dumps(res["sync_probe"], indent=1))
     (out / "config.json").write_text(json.dumps({**res["config"], "stats": res["stats"]}, indent=1))
     print((out / "report.md").read_text())
     print("verify ok:", res["verify"]["ok"], "| head:", res["head"], "| alarms:", len(res["alarms"]))

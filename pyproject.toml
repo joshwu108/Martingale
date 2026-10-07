@@ -93,4 +93,4 @@ ignore = ["E501", "B008", "B905", "UP007", "UP035", "UP006"]
 python_version = "3.10"
 ignore_missing_imports = true
 warn_unused_ignores = false
-files = ["src/martingale/record", "src/martingale/diagnostics", "src/martingale/exact", "checker"]
+files = ["src/martingale/record", "src/martingale/diagnostics", "src/martingale/exact", "src/martingale/inspector", "src/martingale/server.py", "checker"]

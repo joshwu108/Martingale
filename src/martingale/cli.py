@@ -5,6 +5,7 @@ Commands:
   init    — scaffold workspace (SQLite revision store + ledger)
   status  — show revision count, trajectory count
   verify  — run independent checker over entire ledger
+  serve   — rollout inspector over tokens.db
 """
 from __future__ import annotations
 
@@ -71,57 +72,35 @@ def status(workspace: str):
 
 
 @cli.command()
-@click.option("--dir", "workspace", default=".", show_default=True,
-              help="Workspace directory.")
-@click.option("--host", default="127.0.0.1", show_default=True,
-              help="Bind host for the HTTP server.")
-@click.option("--port", default=7373, show_default=True,
-              help="Bind port for the HTTP server.")
-@click.option("--halt-on-forgery/--no-halt-on-forgery", default=True, show_default=True,
-              help="Halt training if a forgery is detected.")
-@click.option("--scan-interval", default=30.0, show_default=True,
-              help="Checker daemon scan interval in seconds (0 = run once and stop).")
-@click.option("--seed", "daemon_seed", default="martingale", show_default=True,
-              help="Draw seed for checker daemon (UTF-8 encoded).")
-def serve(workspace: str, host: str, port: int, halt_on_forgery: bool,
-          scan_interval: float, daemon_seed: str):
-    """Start the Martingale Observatory dashboard server."""
-    import threading
-
+@click.option("--dir", "workspace", default=".", show_default=True, help="Workspace directory (holds tokens.db).")
+@click.option("--host", default="127.0.0.1", show_default=True, help="Bind host for the HTTP server.")
+@click.option("--port", default=7373, show_default=True, help="Bind port for the HTTP server.")
+@click.option("--tokenizer", default=None,
+              help="HuggingFace tokenizer name to decode token ids (needs transformers; otherwise ids only).")
+@click.option("--head", "expected_head", default=None,
+              help="Ledger head to anchor the checker on (default: head.txt / martingale_head.txt in the workspace).")
+@click.option("--halt-on-forgery/--no-halt-on-forgery", default=True, hidden=True,
+              help="Ignored; kept for scripts written against the old Observatory.")
+@click.option("--scan-interval", default=30.0, hidden=True, help="Ignored; kept for the old Observatory.")
+@click.option("--seed", "daemon_seed", default="martingale", hidden=True, help="Ignored; kept for the old Observatory.")
+def serve(workspace: str, host: str, port: int, tokenizer: str | None, expected_head: str | None,
+          halt_on_forgery: bool, scan_interval: float, daemon_seed: str):
+    """Open the rollout inspector over tokens.db: diagnosis, sequences, per-token heatmap, record trust."""
     import uvicorn
-    ws = Path(workspace)
-    rev_db = ws / "revisions.db"
 
-    if not rev_db.exists():
-        click.echo(f"No revision store found at {rev_db}. Run: martingale init --dir {ws}", err=True)
-        raise SystemExit(1)
-
-    from martingale.checker_daemon import CheckerConfig, CheckerDaemon
     from martingale.server import create_app
-    from martingale.store.sqlite import SQLiteLedger, SQLiteRevisionStore
 
-    store = SQLiteRevisionStore(rev_db)
-    ledger = SQLiteLedger(ws / "ledger.db", store)
-    seed_bytes = daemon_seed.encode("utf-8")
-    daemon = CheckerDaemon(ledger, store, CheckerConfig(
-        seed=seed_bytes, halt_on_forgery=halt_on_forgery
-    ))
-
-    # Run one immediate scan, then schedule background thread
-    daemon.scan_once()
-    if scan_interval > 0:
-        def _bg():
-            import time
-            while True:
-                time.sleep(scan_interval)
-                daemon.scan_once()
-        t = threading.Thread(target=_bg, daemon=True)
-        t.start()
-
-    app = create_app(store, ledger, daemon)
-    click.echo(f"Martingale Observatory → http://{host}:{port}")
+    ws = Path(workspace)
+    if not (ws / "tokens.db").exists():
+        click.echo(f"No token record at {ws / 'tokens.db'}. Run a recorded training run or: martingale init --dir {ws}", err=True)
+        raise SystemExit(1)
+    app = create_app(ws, tokenizer=tokenizer, head=expected_head)
+    click.echo(f"martingale inspector -> http://{host}:{port}")
     click.echo(f"  workspace : {ws.resolve()}")
-    click.echo(f"  revisions : {rev_db}")
+    if tokenizer is not None:
+        decoder = getattr(getattr(app.state, "inspector", None), "decoder", None)
+        click.echo(f"  tokenizer : {tokenizer}" + ("" if decoder is not None else
+                                                   "  (ids only: transformers not installed or tokenizer failed to load)"))
     uvicorn.run(app, host=host, port=port)
 
 
