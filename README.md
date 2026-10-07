@@ -55,6 +55,10 @@ that the trainer scores more than two nats lower raises `stale_server`. Numerics
 produces one of those. Full artifacts in `benchmarks/modal/results/`; the cause inside
 TRL's colocate weight sync is not yet diagnosed and is the next thing to look at.
 
+![martingale inspector: diagnosis, per-lag table, per-generation-step sparklines and the stale_server alarms on the real record](docs/img/inspector-overview.png)
+
+![the 172 case: first token at log-prob 0.000 from vLLM, -9.257 from the trainer at lag 0, outlined red as a confident disagreement](docs/img/inspector-sequence-172.png)
+
 ## Sixty seconds, no GPU
 
 ```bash

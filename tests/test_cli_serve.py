@@ -1,7 +1,6 @@
-"""Tests for `martingale serve` CLI command."""
-from unittest.mock import MagicMock, patch
+"""`martingale serve` starts the rollout inspector over tokens.db; the old Observatory flags are still accepted."""
+from unittest.mock import patch
 
-import pytest
 from click.testing import CliRunner
 
 from martingale.cli import cli
@@ -9,93 +8,75 @@ from martingale.cli import cli
 
 class TestServeCommand:
     def test_serve_command_exists(self):
-        """The CLI has a `serve` subcommand."""
-        runner = CliRunner()
-        result = runner.invoke(cli, ["serve", "--help"])
+        result = CliRunner().invoke(cli, ["serve", "--help"])
         assert result.exit_code == 0
-        assert "serve" in result.output.lower() or "host" in result.output.lower()
+        assert "--tokenizer" in result.output and "--head" in result.output
 
     def test_serve_starts_uvicorn(self, tmp_path):
-        """serve invokes uvicorn.run with the FastAPI app."""
         runner = CliRunner()
-        # Init workspace first
         runner.invoke(cli, ["init", "--dir", str(tmp_path)])
-
         with patch("uvicorn.run") as mock_run:
-            result = runner.invoke(cli, [
-                "serve", "--dir", str(tmp_path),
-                "--host", "127.0.0.1", "--port", "7373",
-            ])
-        assert result.exit_code == 0
-        assert mock_run.called
+            result = runner.invoke(cli, ["serve", "--dir", str(tmp_path), "--host", "127.0.0.1", "--port", "7373"])
+        assert result.exit_code == 0, result.output
         _, kwargs = mock_run.call_args
-        assert kwargs.get("host") == "127.0.0.1"
-        assert kwargs.get("port") == 7373
+        assert kwargs.get("host") == "127.0.0.1" and kwargs.get("port") == 7373
 
     def test_serve_default_port_is_7373(self, tmp_path):
         runner = CliRunner()
         runner.invoke(cli, ["init", "--dir", str(tmp_path)])
         with patch("uvicorn.run") as mock_run:
             runner.invoke(cli, ["serve", "--dir", str(tmp_path)])
-        _, kwargs = mock_run.call_args
-        assert kwargs.get("port") == 7373
+        assert mock_run.call_args.kwargs.get("port") == 7373
 
     def test_serve_passes_app_to_uvicorn(self, tmp_path):
         runner = CliRunner()
         runner.invoke(cli, ["init", "--dir", str(tmp_path)])
         with patch("uvicorn.run") as mock_run:
             runner.invoke(cli, ["serve", "--dir", str(tmp_path)])
-        args, _ = mock_run.call_args
-        # First positional arg is the app
-        assert args[0] is not None
+        app = mock_run.call_args.args[0]
+        assert set(app.openapi()["paths"]) >= {"/", "/api/doctor", "/api/steps", "/api/sequences",
+                                                "/api/sequence/{digest}", "/api/record"}
 
     def test_serve_prints_url(self, tmp_path):
         runner = CliRunner()
         runner.invoke(cli, ["init", "--dir", str(tmp_path)])
         with patch("uvicorn.run"):
             result = runner.invoke(cli, ["serve", "--dir", str(tmp_path)])
-        assert "7373" in result.output or "http" in result.output
+        assert "http://127.0.0.1:7373" in result.output
 
     def test_serve_missing_workspace_fails(self, tmp_path):
-        runner = CliRunner()
-        result = runner.invoke(cli, [
-            "serve", "--dir", str(tmp_path / "nonexistent"),
-        ])
+        result = CliRunner().invoke(cli, ["serve", "--dir", str(tmp_path / "nonexistent")])
         assert result.exit_code != 0
 
-    def test_serve_initialises_checker_daemon(self, tmp_path):
-        """serve creates a CheckerDaemon and starts background scanning."""
-        from fractions import Fraction
+    def test_serve_without_token_record_fails(self, tmp_path):
+        (tmp_path / "revisions.db").write_bytes(b"")
+        result = CliRunner().invoke(cli, ["serve", "--dir", str(tmp_path)])
+        assert result.exit_code != 0 and "tokens.db" in result.output
 
-        from martingale.draw import draw_action
-        from martingale.ledger import GENESIS_DIGEST, ActionRecord
-        from martingale.store.sqlite import SQLiteLedger, SQLiteRevisionStore
-
-        # Populate workspace with a trajectory
-        store = SQLiteRevisionStore(tmp_path / "revisions.db")
-        ledger = SQLiteLedger(tmp_path / "ledger.db", store)
-        probs = {0: Fraction(1, 2), 1: Fraction(1, 2)}
-        rev = store.publish({0: probs})
-        draw = draw_action(probs, seed=b"serve-test", actor_id=0, episode=0, step=0)
-        rec = ActionRecord(
-            revision_digest=rev.digest, state=0, action=draw.action,
-            behavior_prob=probs[draw.action], draw=draw,
-            env_next_state=1, env_reward=Fraction(1),
-            prev_digest=GENESIS_DIGEST,
-        )
-        ledger.append_trajectory(actor_id=0, episode_id=0, records=[rec])
-
-        captured_app = {}
-        def capture_run(app, **kwargs):
-            captured_app['app'] = app
-
+    def test_old_observatory_flags_are_still_accepted(self, tmp_path):
         runner = CliRunner()
-        with patch("uvicorn.run", side_effect=capture_run):
-            runner.invoke(cli, [
-                "serve", "--dir", str(tmp_path),
-                "--scan-interval", "0",
-                "--seed", "serve-test",
-            ])
+        runner.invoke(cli, ["init", "--dir", str(tmp_path)])
+        with patch("uvicorn.run") as mock_run:
+            result = runner.invoke(cli, ["serve", "--dir", str(tmp_path), "--scan-interval", "0",
+                                         "--seed", "serve-test", "--no-halt-on-forgery"])
+        assert result.exit_code == 0, result.output
+        assert mock_run.called
 
-        # App should have been created
-        assert captured_app.get('app') is not None
+    def test_tokenizer_and_head_reach_the_app(self, tmp_path):
+        runner = CliRunner()
+        runner.invoke(cli, ["init", "--dir", str(tmp_path)])
+        with patch("uvicorn.run"), patch("martingale.server.create_app") as mk:
+            result = runner.invoke(cli, ["serve", "--dir", str(tmp_path), "--tokenizer", "org/model", "--head", "a" * 64])
+        assert result.exit_code == 0, result.output
+        kwargs = mk.call_args.kwargs
+        assert kwargs["tokenizer"] == "org/model" and kwargs["head"] == "a" * 64
+
+    def test_serve_mentions_ids_only_when_transformers_is_missing(self, tmp_path, monkeypatch):
+        import sys
+        monkeypatch.setitem(sys.modules, "transformers", None)
+        runner = CliRunner()
+        runner.invoke(cli, ["init", "--dir", str(tmp_path)])
+        with patch("uvicorn.run"):
+            result = runner.invoke(cli, ["serve", "--dir", str(tmp_path), "--tokenizer", "org/model"])
+        assert result.exit_code == 0, result.output
+        assert "ids only" in result.output

@@ -1,0 +1,502 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>martingale inspector</title>
+<link rel="icon" href="data:,">
+<style>
+  /* One accent (lag, ink blue); red is reserved for confident disagreements. Light paper only, by design. */
+  :root {
+    --paper: #f5f2ea; --card: #fbf9f4; --ink: #1c1a16; --muted: #6e6859; --rule: #d8d1c2; --rule-soft: #e9e3d6;
+    --accent: #1f4f8f; --accent-ink: #163a69; --accent-soft: rgba(31, 79, 143, 0.10);
+    --red: #c4102a; --red-soft: rgba(196, 16, 42, 0.08); --amber: #9a6b00; --ok: #2f7a3e;
+    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    --sans: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+  }
+  *, *::before, *::after { box-sizing: border-box; }
+  html { background: var(--paper); }
+  body { margin: 0; color: var(--ink); font: 13px/1.45 var(--sans); background: var(--paper); min-width: 1180px; }
+  a { color: var(--accent); }
+  button { font: inherit; color: inherit; background: none; border: 1px solid var(--rule); border-radius: 3px; padding: 3px 9px; cursor: pointer; }
+  button:hover { border-color: var(--ink); }
+  button:focus-visible, tr:focus-visible, .cell:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button:disabled { opacity: .4; cursor: default; }
+  code, .mono, td, th { font-family: var(--mono); }
+  .num { font-variant-numeric: tabular-nums; text-align: right; }
+
+  header { display: grid; grid-template-columns: 1fr auto; gap: 32px; align-items: end; padding: 28px 32px 18px; border-bottom: 1px solid var(--rule); }
+  .wordmark { font: 600 30px/1 var(--serif); letter-spacing: -.01em; }
+  .wordmark small { font: 400 15px/1 var(--serif); color: var(--muted); margin-left: 12px; font-style: italic; }
+  .runline { margin-top: 10px; color: var(--muted); font-size: 12px; }
+  .runline code { color: var(--ink); }
+
+  main { padding: 20px 32px 48px; max-width: 1560px; margin: 0 auto; display: grid; gap: 20px; }
+  .panel { background: var(--card); border: 1px solid var(--rule); border-radius: 6px; }
+  .panel > h2 { margin: 0; padding: 12px 18px; font: 500 12px/1 var(--sans); letter-spacing: .12em; text-transform: uppercase; color: var(--muted); border-bottom: 1px solid var(--rule-soft); display: flex; align-items: center; gap: 14px; }
+  .panel > h2 .spacer { flex: 1; }
+  .panel > h2 .ctl { display: inline-flex; gap: 4px; align-items: center; text-transform: none; letter-spacing: 0; font-size: 12px; }
+  .panel > h2 .ctl span { margin-right: 4px; }
+
+  /* panel 1 */
+  #panel-diagnosis .body { display: grid; grid-template-columns: minmax(380px, 5fr) 7fr; gap: 0; }
+  #panel-diagnosis .left { padding: 18px 22px; border-right: 1px solid var(--rule-soft); }
+  #panel-diagnosis .right { padding: 14px 18px 18px; display: grid; grid-template-rows: auto auto; align-content: start; gap: 18px; }
+  .verdict { font: 400 19px/1.35 var(--serif); margin: 0 0 14px; }
+  .lines { margin: 0; padding: 0; list-style: none; font: 14.5px/1.5 var(--serif); }
+  .lines li { padding: 7px 0 7px 16px; border-top: 1px solid var(--rule-soft); position: relative; }
+  .lines li::before { content: ""; position: absolute; left: 2px; top: 15px; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+  .lines li.hot::before { background: var(--red); }
+  .alarms { margin: 16px 0 0; padding: 0; list-style: none; font-size: 12px; }
+  .alarms li { display: grid; grid-template-columns: auto auto 1fr; gap: 10px; align-items: baseline; padding: 6px 0; border-top: 1px solid var(--rule-soft); }
+  .badge { font: 600 10.5px/1 var(--mono); letter-spacing: .04em; padding: 4px 6px; border-radius: 3px; border: 1px solid var(--ink); white-space: nowrap; }
+  .badge.error { background: var(--ink); color: #fff; }
+  .badge.error.stale_server { background: var(--red); border-color: var(--red); }
+  .badge.warn { border-color: var(--amber); color: var(--amber); }
+  .alarms .step { color: var(--muted); font-family: var(--mono); }
+  .alarms .msg { color: var(--ink); }
+  table.lags { width: 100%; border-collapse: collapse; font-size: 12px; }
+  table.lags th, table.lags td { padding: 5px 8px; border-bottom: 1px solid var(--rule-soft); white-space: nowrap; }
+  table.lags th { font-weight: 500; color: var(--muted); text-align: right; font-family: var(--sans); }
+  table.lags th:first-child, table.lags td:first-child { text-align: left; }
+  table.lags tr.sel td { background: var(--accent-soft); }
+  table.lags tr { cursor: pointer; }
+  table.lags td.conf.nonzero { color: var(--red); font-weight: 600; }
+  .sparks { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  .spark { border-top: 1px solid var(--rule-soft); padding-top: 8px; }
+  .spark .t { font-size: 11px; color: var(--muted); display: flex; justify-content: space-between; margin-bottom: 2px; }
+  .spark .t b { color: var(--ink); font-weight: 500; }
+  .spark svg { width: 100%; height: 78px; display: block; overflow: visible; }
+  .spark .pt { cursor: pointer; }
+  .spark text { font: 10px var(--mono); fill: var(--muted); }
+
+  /* panel 2 + 3 */
+  .duo { display: grid; grid-template-columns: minmax(560px, 11fr) minmax(480px, 9fr); gap: 20px; align-items: start; }
+  table.seqs { width: 100%; border-collapse: collapse; font-size: 12px; }
+  table.seqs th { position: sticky; top: 0; background: var(--card); font-family: var(--sans); font-weight: 500; color: var(--muted); text-align: right; padding: 7px 8px; border-bottom: 1px solid var(--rule); cursor: pointer; user-select: none; white-space: nowrap; }
+  table.seqs th.l, table.seqs td.l { text-align: left; }
+  table.seqs th.sorted { color: var(--accent-ink); }
+  table.seqs th .arrow { font-size: 9px; margin-left: 3px; }
+  table.seqs td { padding: 5px 8px; border-bottom: 1px solid var(--rule-soft); white-space: nowrap; }
+  table.seqs tbody tr { cursor: pointer; }
+  table.seqs tbody tr:hover td { background: var(--accent-soft); }
+  table.seqs tbody tr.sel td { background: var(--accent-soft); }
+  table.seqs tbody tr.sel td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+  table.seqs td.text { max-width: 260px; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
+  table.seqs td.conf.nonzero { color: var(--red); font-weight: 700; }
+  table.seqs td.dim { color: var(--muted); }
+  .bar { display: inline-block; height: 9px; vertical-align: -1px; margin-right: 6px; background: var(--accent); opacity: .85; border-radius: 1px; }
+  .pager { display: flex; gap: 10px; align-items: center; padding: 10px 14px; color: var(--muted); font-size: 12px; border-top: 1px solid var(--rule-soft); }
+  .pager .spacer { flex: 1; }
+  .tbl-wrap { max-height: 640px; overflow: auto; }
+  .empty { padding: 32px 18px; color: var(--muted); font: italic 14px var(--serif); }
+
+  #panel-sequence .body { padding: 14px 18px 18px; }
+  .seqhead { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: baseline; }
+  .seqhead h3 { margin: 0; font: 500 20px/1.2 var(--serif); }
+  .seqhead h3 small { font: 12px var(--mono); color: var(--muted); margin-left: 10px; }
+  .kv { display: flex; flex-wrap: wrap; gap: 4px 18px; margin: 8px 0 12px; color: var(--muted); font-size: 12px; }
+  .kv b { color: var(--ink); font-weight: 500; font-family: var(--mono); }
+  .prompt { font: 12px/1.5 var(--mono); color: var(--muted); background: var(--paper); border: 1px dashed var(--rule); border-radius: 4px; padding: 8px 10px; margin-bottom: 12px; white-space: pre-wrap; word-break: break-word; max-height: 120px; overflow: auto; }
+  .prompt b { color: var(--ink); font-weight: 500; }
+  .strip { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0 12px; }
+  .cell { font: 13px/1 var(--mono); padding: 7px 7px; border-radius: 3px; border: 1px solid var(--rule); background: #fff; color: var(--ink); cursor: default; position: relative; white-space: pre; }
+  .cell.unscored { border-style: dashed; color: var(--muted); }
+  .cell.conf { outline: 2px solid var(--red); outline-offset: -1px; border-color: var(--red); }
+  .cell.inkwhite { color: #fff; }
+  .legend { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--muted); margin: 0 0 8px; white-space: nowrap; }
+  .legend .unscored-sw { border: 1px dashed var(--rule); padding: 0 5px; border-radius: 3px; }
+  .ramp { width: 120px; height: 9px; border: 1px solid var(--rule); background: linear-gradient(90deg, #fff, var(--accent)); }
+  .swatch-red { width: 14px; height: 10px; border: 2px solid var(--red); border-radius: 2px; }
+  .matrix-wrap { overflow-x: auto; border: 1px solid var(--rule-soft); border-radius: 4px; }
+  table.matrix { border-collapse: collapse; font-size: 11.5px; }
+  table.matrix th { font-family: var(--sans); font-weight: 500; color: var(--muted); text-align: left; padding: 5px 10px; white-space: nowrap; border-bottom: 1px solid var(--rule-soft); background: var(--card); position: sticky; left: 0; }
+  table.matrix td { padding: 5px 8px; text-align: right; border-bottom: 1px solid var(--rule-soft); white-space: nowrap; min-width: 58px; }
+  table.matrix tr.tok td { text-align: center; font-weight: 600; white-space: pre; }
+  table.matrix tr.sel th, table.matrix tr.sel td { background: var(--accent-soft); }
+  table.matrix td.conf { outline: 2px solid var(--red); outline-offset: -2px; font-weight: 700; color: var(--red); }
+  table.matrix td.conf.inkwhite { color: #fff; }
+  table.matrix td.none { color: var(--rule); }
+  .tip { position: fixed; z-index: 10; pointer-events: none; background: var(--ink); color: #f5f2ea; font: 11.5px/1.5 var(--mono); padding: 8px 10px; border-radius: 4px; white-space: pre; display: none; box-shadow: 0 4px 16px rgba(0,0,0,.25); }
+  .tip .r { color: #ff8a98; }
+
+  /* panel 4 */
+  #panel-record { min-width: 420px; padding: 0; }
+  #panel-record .body { display: grid; grid-template-columns: repeat(4, auto) 1fr; gap: 0 22px; padding: 12px 18px 14px; align-items: end; }
+  .stat .k { font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+  .stat .v { font: 500 22px/1.1 var(--serif); font-variant-numeric: tabular-nums; }
+  .trust { font-size: 12px; justify-self: end; text-align: right; }
+  .trust .status { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); display: inline-block; }
+  .dot.bad { background: var(--ink); }
+  .dot.unk { background: var(--amber); }
+  .trust code { font-size: 11px; color: var(--muted); }
+  .err { color: var(--ink); font: italic 13px var(--serif); padding: 12px 18px; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <div class="wordmark">martingale<small>rollout inspector</small></div>
+    <div class="runline" id="runline">loading record…</div>
+  </div>
+  <section class="panel" id="panel-record" aria-labelledby="h-record">
+    <h2 id="h-record">Record &amp; trust</h2>
+    <div class="body" id="record-body"><div class="err">loading…</div></div>
+  </section>
+</header>
+
+<main>
+  <section class="panel" id="panel-diagnosis" aria-labelledby="h-diag">
+    <h2 id="h-diag">Diagnosis
+      <span class="spacer"></span>
+      <span class="ctl" id="lag-ctl"><span>lag</span></span>
+      <span class="ctl" id="step-ctl"><span>generation step</span></span>
+    </h2>
+    <div class="body">
+      <div class="left">
+        <p class="verdict" id="verdict"></p>
+        <ul class="lines" id="diag-lines"></ul>
+        <ul class="alarms" id="alarms"></ul>
+      </div>
+      <div class="right">
+        <table class="lags" id="lag-table"></table>
+        <div class="sparks" id="sparks"></div>
+      </div>
+    </div>
+  </section>
+
+  <div class="duo">
+    <section class="panel" id="panel-sequences" aria-labelledby="h-seqs">
+      <h2 id="h-seqs">Sequences <span class="spacer"></span><span class="ctl" id="seq-count"></span></h2>
+      <div class="tbl-wrap"><table class="seqs" id="seq-table"></table></div>
+      <div class="pager" id="pager"></div>
+    </section>
+
+    <section class="panel" id="panel-sequence" aria-labelledby="h-seq">
+      <h2 id="h-seq">Sequence detail</h2>
+      <div class="body" id="seq-detail"><div class="empty">Click a sequence to see every token: engine log-prob, trainer score per lag, and the log-ratio heatmap.</div></div>
+    </section>
+  </div>
+</main>
+<div class="tip" id="tip"></div>
+
+<script>
+'use strict';
+// ---- state (mirrored into the URL hash so a view is shareable) --------------------------------------------
+const PAGE = 50;
+const state = { lag: 0, step: null, sort: 'confident_disagreements', order: 'desc', offset: 0, seq: null,
+                doctor: null, steps: null, record: null, list: null, detail: null };
+
+function readHash() {
+  const h = new URLSearchParams(location.hash.replace(/^#/, ''));
+  if (h.has('lag')) state.lag = +h.get('lag');
+  if (h.has('step')) state.step = h.get('step') === 'all' ? null : +h.get('step');
+  if (h.has('sort')) state.sort = h.get('sort');
+  if (h.has('order')) state.order = h.get('order');
+  if (h.has('seq')) state.seq = h.get('seq');
+}
+function writeHash() {
+  const h = new URLSearchParams();
+  h.set('lag', state.lag); h.set('step', state.step === null ? 'all' : state.step);
+  h.set('sort', state.sort); h.set('order', state.order);
+  if (state.seq) h.set('seq', state.seq);
+  history.replaceState(null, '', '#' + h.toString());
+}
+
+// ---- helpers ---------------------------------------------------------------------------------------------
+const $ = (id) => document.getElementById(id);
+function el(tag, attrs = {}, ...children) {
+  const n = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === 'class') n.className = v;
+    else if (k.startsWith('on')) n.addEventListener(k.slice(2), v);
+    else if (v !== null && v !== undefined) n.setAttribute(k, v);
+  }
+  for (const c of children.flat()) if (c !== null && c !== undefined) n.append(c.nodeType ? c : document.createTextNode(String(c)));
+  return n;
+}
+async function api(path, params) {
+  const u = new URL(path, location.href);
+  if (params) for (const [k, v] of Object.entries(params)) if (v !== null && v !== undefined) u.searchParams.set(k, v);
+  const r = await fetch(u);
+  if (!r.ok) throw new Error(`${path}: HTTP ${r.status}`);
+  return r.json();
+}
+const fmt = (x, d = 3) => x === null || x === undefined ? '–' : (Math.abs(x) >= 1e-2 || x === 0 ? x.toFixed(d) : x.toExponential(1));
+const fmtLp = (x) => x === null || x === undefined ? '–' : x.toFixed(3);
+const pct = (x) => x === null || x === undefined ? '–' : (100 * x).toFixed(0) + '%';
+const visible = (s) => s === null ? null : s.replace(/ /g, '␣').replace(/\n/g, '⏎').replace(/\t/g, '⇥');
+// |log r| -> accent alpha. 0 nats = paper, 5+ nats = solid accent. Display only; the exact value is in the JSON.
+const heat = (a) => Math.min(1, Math.pow(Math.min(Math.abs(a), 5) / 5, 0.6));
+function heatStyle(absLr) {
+  const t = heat(absLr);
+  return { bg: `rgba(31, 79, 143, ${t.toFixed(3)})`, white: t > 0.55 };
+}
+function short(d) { return d ? d.slice(0, 10) : ''; }
+
+// ---- tooltip ---------------------------------------------------------------------------------------------
+const tip = $('tip');
+function showTip(e, lines) {
+  tip.replaceChildren(...lines.map((l) => typeof l === 'string' ? el('div', {}, l) : l));
+  tip.style.display = 'block';
+  moveTip(e);
+}
+function moveTip(e) {
+  const w = tip.offsetWidth, h = tip.offsetHeight;
+  tip.style.left = Math.min(e.clientX + 14, innerWidth - w - 8) + 'px';
+  tip.style.top = (e.clientY + 18 + h > innerHeight ? e.clientY - h - 10 : e.clientY + 18) + 'px';
+}
+function hideTip() { tip.style.display = 'none'; }
+
+// ---- panel 4: record & trust -----------------------------------------------------------------------------
+function renderRecord() {
+  const r = state.record, c = r.checker;
+  const ok = c.ok, anchored = c.anchored;
+  const status = !ok ? 'checker FAILED' : anchored ? 'verified, anchored' : 'verified, unanchored';
+  const dot = el('span', { class: 'dot ' + (!ok ? 'bad' : anchored ? '' : 'unk') });
+  const nErr = Object.values(c.errors || {}).reduce((a, b) => a + b.length, 0);
+  const stat = (k, v) => el('div', { class: 'stat' }, el('div', { class: 'k' }, k), el('div', { class: 'v' }, v));
+  $('record-body').replaceChildren(
+    stat('revisions', r.revisions), stat('sequences', r.sequences), stat('tokens', r.tokens), stat('scores', r.scores),
+    el('div', { class: 'trust' },
+      el('div', { class: 'status' }, dot, status + (nErr ? ` (${nErr} error${nErr > 1 ? 's' : ''})` : '')),
+      el('div', {}, el('code', { title: r.head }, 'head ' + r.head.slice(0, 16) + '…')),
+      el('div', {}, el('code', {}, anchored ? 'anchor: ' + (r.head_source || '--head').split('/').slice(-2).join('/') : 'no stored head: pass --head to anchor'))));
+  $('runline').replaceChildren(
+    `${r.sequences} sequences · ${r.tokens} tokens · ${r.scores} trainer scores · ${r.revisions} revisions · `,
+    el('code', {}, (state.doctor && state.doctor.replay_steps) + ' optimizer steps replayed'));
+}
+
+// ---- panel 1: diagnosis --------------------------------------------------------------------------------
+function renderControls() {
+  const lags = state.doctor.decomposition.lags;
+  const lc = $('lag-ctl'); lc.replaceChildren(el('span', {}, 'lag'));
+  for (const lag of lags) lc.append(el('button', { class: lag === state.lag ? 'on' : '', onclick: () => setLag(lag) }, lag));
+  const sc = $('step-ctl'); sc.replaceChildren(el('span', {}, 'generation step'));
+  sc.append(el('button', { class: state.step === null ? 'on' : '', onclick: () => setStep(null) }, 'all'));
+  for (const s of state.steps.steps) sc.append(el('button', { class: s.generation_step === state.step ? 'on' : '', onclick: () => setStep(s.generation_step) }, s.generation_step));
+}
+function renderDiagnosis() {
+  const d = state.doctor, a = d.attribution.float_informational;
+  const nConf = d.decomposition.lag0_floor ? d.decomposition.lag0_floor.n_confident_disagreements : 0;
+  const stale = d.alarms.filter((x) => x.kind === 'stale_server');
+  let verdict;
+  if (stale.length) verdict = `The engine generated from different weights than the trainer scored with: ${nConf} confident disagreements at lag 0, at step${stale.length > 1 ? 's' : ''} ${stale.map((x) => x.step).join(', ')}.`;
+  else if (a.staleness_share === null) verdict = a.floor === null ? 'No lag-0 tokens: the engine floor cannot be measured.' : 'Only lag-0 tokens so far: no staleness to attribute.';
+  else verdict = `${pct(a.staleness_share)} of the off-policy signal is staleness, ${pct(a.engine_share)} is engine-vs-trainer mismatch (floor ${fmt(a.floor)} nats).`;
+  $('verdict').textContent = verdict;
+  $('diag-lines').replaceChildren(...d.diagnosis.map((line) => el('li', { class: /DIFFERENT WEIGHTS|stale/i.test(line) ? 'hot' : '' }, line)));
+  const al = $('alarms');
+  al.replaceChildren(...(d.alarms.length ? d.alarms : []).map((x) => el('li', {},
+    el('span', { class: `badge ${x.level} ${x.kind}` }, x.kind), el('span', { class: 'step' }, 'step ' + x.step), el('span', { class: 'msg' }, x.message))));
+  if (!d.alarms.length) al.append(el('li', {}, el('span', { class: 'badge' }, 'no alarms'), el('span', { class: 'step' }, ''), el('span', { class: 'msg' }, 'the replayed monitor raised nothing on this record')));
+}
+function renderLagTable() {
+  const by = state.doctor.decomposition.by_lag;
+  const t = $('lag-table');
+  const head = el('tr', {}, ...['lag', 'tokens', 'seqs (mixed)', 'mean log r', 'mean |log r|', 'max |log r|', 'ratio p50', 'ESS/n', 'confident'].map((h) => el('th', {}, h)));
+  const rows = by.map((b) => {
+    const f = b.float_informational;
+    return el('tr', { class: b.lag === state.lag ? 'sel' : '', tabindex: 0, onclick: () => setLag(b.lag), onkeydown: (e) => { if (e.key === 'Enter') setLag(b.lag); } },
+      el('td', {}, b.lag), el('td', { class: 'num' }, b.n_tokens), el('td', { class: 'num' }, `${b.n_sequences} (${b.n_mixed_sequences})`),
+      el('td', { class: 'num' }, (f.mean_log_ratio >= 0 ? '+' : '') + fmt(f.mean_log_ratio)), el('td', { class: 'num' }, fmt(f.mean_abs_log_ratio)),
+      el('td', { class: 'num' }, fmt(f.max_abs_log_ratio)), el('td', { class: 'num' }, f.ratio_p50.toFixed(4)), el('td', { class: 'num' }, f.ess_fraction.toFixed(2)),
+      el('td', { class: 'num conf ' + (b.n_confident_disagreements ? 'nonzero' : '') }, b.n_confident_disagreements));
+  });
+  t.replaceChildren(el('thead', {}, head), el('tbody', {}, ...rows));
+}
+// Inline SVG sparklines over generation steps; a point click filters the sequence table to that step.
+function sparkline({ title, right, values, labels, log = false, bars = false, fmtv }) {
+  const W = 320, H = 70, padL = 34, padR = 6, padT = 8, padB = 16;
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+  const xs = labels.map((_, i) => padL + (labels.length === 1 ? (W - padL - padR) / 2 : i * (W - padL - padR) / (labels.length - 1)));
+  const vals = values.map((v) => (v === null || v === undefined) ? null : (log ? Math.log10(Math.max(v, 1e-6)) : v));
+  const present = vals.filter((v) => v !== null);
+  let lo = present.length ? Math.min(...present) : 0, hi = present.length ? Math.max(...present) : 1;
+  if (!log && !bars) { lo = Math.min(lo, 0); hi = Math.max(hi, 1); }
+  if (bars) { lo = 0; hi = Math.max(hi, 1); }
+  if (hi === lo) { hi = lo + 1; }
+  const y = (v) => padT + (H - padT - padB) * (1 - (v - lo) / (hi - lo));
+  const mk = (tag, attrs) => { const n = document.createElementNS('http://www.w3.org/2000/svg', tag); for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v); return n; };
+  svg.append(mk('line', { x1: padL, x2: W - padR, y1: y(lo), y2: y(lo), stroke: '#d8d1c2' }));
+  const tickText = (v) => log ? ('1e' + Math.round(v)) : (bars ? String(Math.round(v)) : v.toFixed(1));
+  for (const v of [lo, hi]) { const t = mk('text', { x: padL - 4, y: y(v) + 3, 'text-anchor': 'end' }); t.textContent = tickText(v); svg.append(t); }
+  if (!bars) {
+    const pts = vals.map((v, i) => v === null ? null : `${xs[i].toFixed(1)},${y(v).toFixed(1)}`).filter(Boolean);
+    if (pts.length > 1) svg.append(mk('polyline', { points: pts.join(' '), fill: 'none', stroke: '#1f4f8f', 'stroke-width': 1.5 }));
+  }
+  labels.forEach((lab, i) => {
+    const v = vals[i];
+    const sel = state.step === lab;
+    const color = bars && values[i] > 0 ? '#c4102a' : '#1f4f8f';
+    if (bars) {
+      const h0 = y(lo), h1 = v === null ? h0 : y(v);
+      svg.append(mk('rect', { x: xs[i] - 7, y: Math.min(h0, h1), width: 14, height: Math.max(1, Math.abs(h0 - h1)), fill: values[i] > 0 ? '#c4102a' : '#d8d1c2', class: 'pt' }));
+    } else if (v !== null) {
+      svg.append(mk('circle', { cx: xs[i], cy: y(v), r: sel ? 4.5 : 3, fill: sel ? color : '#fbf9f4', stroke: color, 'stroke-width': 1.5, class: 'pt' }));
+    }
+    const hit = mk('rect', { x: xs[i] - 12, y: 0, width: 24, height: H, fill: 'transparent', class: 'pt' });
+    hit.addEventListener('click', () => setStep(state.step === lab ? null : lab));
+    hit.addEventListener('mousemove', (e) => showTip(e, [`generation step ${lab}`, `${title}: ${fmtv(values[i])}`]));
+    hit.addEventListener('mouseleave', hideTip);
+    svg.append(hit);
+    const t = mk('text', { x: xs[i], y: H - 3, 'text-anchor': 'middle', 'font-weight': sel ? 700 : 400 }); t.textContent = lab; svg.append(t);
+  });
+  return el('div', { class: 'spark' }, el('div', { class: 't' }, el('b', {}, title), el('span', {}, right || '')), svg);
+}
+function renderSparks() {
+  const S = state.steps.steps, labels = S.map((s) => s.generation_step);
+  $('sparks').replaceChildren(
+    sparkline({ title: 'lag-0 floor', right: 'mean |log r|, log scale', log: true, labels, values: S.map((s) => s.float_informational.lag0_floor), fmtv: (v) => fmt(v) }),
+    sparkline({ title: `ESS/n at lag ${state.lag}`, right: '0 to 1', labels, values: S.map((s) => s.float_informational.ess_fraction_by_lag[String(state.lag)] ?? null), fmtv: (v) => v === null || v === undefined ? 'not scored' : v.toFixed(3) }),
+    sparkline({ title: 'confident disagreements', right: 'lag 0, count', bars: true, labels, values: S.map((s) => s.n_confident_disagreements_lag0), fmtv: (v) => String(v) }));
+}
+
+// ---- panel 2: sequences --------------------------------------------------------------------------------
+async function loadSequences() {
+  state.list = await api('/api/sequences', { step: state.step, lag: state.lag, sort: state.sort, order: state.order, limit: PAGE, offset: state.offset });
+  renderSequences();
+}
+const COLS = [
+  { key: 'generation_step', label: 'step', sort: null },
+  { key: 'sequence_id', label: 'sequence', sort: null, left: true },
+  { key: 'length', label: 'len', sort: 'length' },
+  { key: 'reward', label: 'advantage', sort: 'advantage' },
+  { key: 'mean_abs', label: 'mean |log r|', sort: 'mean_abs_log_ratio' },
+  { key: 'conf', label: 'confident', sort: 'confident_disagreements' },
+  { key: 'mixed', label: 'mixed', sort: null },
+  { key: 'text', label: 'completion', sort: null, left: true },
+];
+function renderSequences() {
+  const L = state.list, lag = String(state.lag);
+  const maxAbs = Math.max(1e-9, ...L.rows.map((r) => r.float_informational.mean_abs_log_ratio[lag] ?? 0));
+  const head = el('tr', {}, ...COLS.map((c) => {
+    const sorted = c.sort && c.sort === state.sort;
+    const label = c.key === 'mean_abs' || c.key === 'conf' ? `${c.label} @lag ${lag}` : c.label;
+    return el('th', { class: (c.left ? 'l ' : '') + (sorted ? 'sorted' : ''), onclick: c.sort ? () => setSort(c.sort) : null, title: c.sort ? 'sort' : null },
+      label, sorted ? el('span', { class: 'arrow' }, state.order === 'desc' ? '▼' : '▲') : null);
+  }));
+  const rows = L.rows.map((r) => {
+    const fi = r.float_informational, ma = fi.mean_abs_log_ratio[lag], conf = r.confident_disagreements[lag];
+    const tr = el('tr', { class: r.digest === state.seq ? 'sel' : '', tabindex: 0, onclick: () => openSequence(r.digest), onkeydown: (e) => { if (e.key === 'Enter') openSequence(r.digest); } },
+      el('td', { class: 'num' }, r.generation_step), el('td', { class: 'l' }, r.sequence_id), el('td', { class: 'num' }, r.length),
+      el('td', { class: 'num ' + (fi.reward === null ? 'dim' : '') }, fi.reward === null ? '–' : (fi.reward >= 0 ? '+' : '') + fi.reward.toFixed(3)),
+      el('td', { class: 'num ' + (ma === undefined ? 'dim' : '') }, ma === undefined ? 'not scored' : [el('span', { class: 'bar', style: `width:${Math.round(44 * ma / maxAbs)}px` }), fmt(ma)]),
+      el('td', { class: 'num conf ' + (conf ? 'nonzero' : conf === undefined ? 'dim' : '') }, conf === undefined ? '–' : conf),
+      el('td', { class: 'num dim' }, r.mixed_revision ? 'yes' : ''),
+      el('td', { class: 'l text', title: r.text ?? '' }, r.text === null ? el('span', { class: 'dim' }, 'ids only') : visible(r.text)));
+    return tr;
+  });
+  $('seq-table').replaceChildren(el('thead', {}, head), el('tbody', {}, ...rows));
+  $('seq-count').textContent = `${L.total} sequence${L.total === 1 ? '' : 's'}${state.step === null ? '' : ' at step ' + state.step}`;
+  const p = $('pager');
+  const a = L.total ? L.offset + 1 : 0, b = Math.min(L.total, L.offset + L.rows.length);
+  p.replaceChildren(
+    el('span', {}, `${a}–${b} of ${L.total}`), el('span', { class: 'spacer' }),
+    el('button', { disabled: L.offset === 0 ? '' : null, onclick: () => { state.offset = Math.max(0, state.offset - PAGE); loadSequences(); } }, '‹ prev'),
+    el('button', { disabled: b >= L.total ? '' : null, onclick: () => { state.offset += PAGE; loadSequences(); } }, 'next ›'));
+  if (!L.rows.length) $('seq-table').append(el('tbody', {}, el('tr', {}, el('td', { colspan: COLS.length, class: 'empty' }, 'no sequences'))));
+}
+
+// ---- panel 3: sequence detail --------------------------------------------------------------------------
+async function openSequence(digest) {
+  state.seq = digest; writeHash();
+  try { state.detail = await api('/api/sequence/' + digest); } catch (e) { $('seq-detail').replaceChildren(el('div', { class: 'err' }, String(e.message))); return; }
+  renderDetail();
+  for (const tr of $('seq-table').querySelectorAll('tbody tr')) tr.classList.toggle('sel', false);
+  renderSequences();
+}
+function tokenTipLines(t, selLag) {
+  const lines = [`#${t.position}  id ${t.token_id}${t.text !== null ? '  ' + JSON.stringify(t.text) : ''}`,
+                 `engine log p  ${fmtLp(t.float_informational.behavior_logprob)}   (rev step ${t.revision_step})`];
+  for (const [lag, s] of Object.entries(t.scores)) {
+    const line = `lag ${lag}  trainer ${fmtLp(s.float_informational.logprob)}   log r ${s.float_informational.log_ratio >= 0 ? '+' : ''}${fmtLp(s.float_informational.log_ratio)}${s.confident_disagreement ? '   CONFIDENT DISAGREEMENT' : ''}`;
+    lines.push(s.confident_disagreement ? el('div', { class: 'r' }, line) : line);
+  }
+  if (!Object.keys(t.scores).length) lines.push('not scored');
+  return lines;
+}
+function renderDetail() {
+  const d = state.detail, lag = String(state.lag), fi = d.float_informational;
+  const body = $('seq-detail');
+  const nConf = d.tokens.reduce((n, t) => n + Object.values(t.scores).filter((s) => s.confident_disagreement).length, 0);
+  const headEl = el('div', { class: 'seqhead' },
+    el('h3', {}, d.sequence_id, el('small', { title: d.digest }, short(d.digest) + '…')),
+    el('div', { class: 'kv' }, el('span', {}, 'generated at step ', el('b', {}, d.generation_steps.join('→'))), el('span', {}, 'scored at lag ', el('b', {}, d.lags.join(', ') || 'none')),
+      el('span', {}, 'advantage ', el('b', {}, fi.reward === null ? '–' : fi.reward.toFixed(3))), el('span', {}, 'tokens ', el('b', {}, d.tokens.length)),
+      el('span', {}, 'confident disagreements ', el('b', { style: nConf ? 'color:var(--red)' : '' }, nConf)), d.mixed_revision ? el('span', {}, el('b', {}, 'mixed revision')) : null));
+  const prompt = el('div', { class: 'prompt' },
+    d.prompt.text !== null ? [el('b', {}, 'prompt  '), d.prompt.text]
+      : d.prompt.ids !== null ? [el('b', {}, `prompt ids (${d.prompt.len})  `), d.prompt.ids.join(' ')]
+      : [el('b', {}, 'prompt  '), `${d.prompt.len} tokens, ids not recorded in this run; digest ${short(d.prompt.digest)}…`]);
+  const legend = el('div', { class: 'legend' }, el('span', {}, `|log r| at lag ${lag}`), el('span', {}, '0'), el('span', { class: 'ramp' }), el('span', {}, '5+ nats'),
+    el('span', { class: 'swatch-red', style: 'margin-left:12px', title: 'engine ≥50% sure, trainer >2 nats lower' }), el('span', { title: 'engine ≥50% sure, trainer >2 nats lower' }, 'confident disagreement'),
+    el('span', { class: 'unscored-sw', style: 'margin-left:12px' }, 'unscored at this lag'));
+  const strip = el('div', { class: 'strip' }, ...d.tokens.map((t) => {
+    const s = t.scores[lag];
+    const label = t.text === null ? String(t.token_id) : visible(t.text) || '·';
+    const attrs = { class: 'cell', tabindex: 0, 'aria-label': `token ${t.position}` };
+    if (!s) attrs.class += ' unscored';
+    else {
+      const h = heatStyle(s.float_informational.log_ratio);
+      attrs.style = `background:${h.bg}`; if (h.white) attrs.class += ' inkwhite';
+      if (s.confident_disagreement) attrs.class += ' conf';
+    }
+    const c = el('span', attrs, label);
+    c.addEventListener('mousemove', (e) => showTip(e, tokenTipLines(t, lag)));
+    c.addEventListener('mouseleave', hideTip);
+    c.addEventListener('focus', (e) => showTip({ clientX: c.getBoundingClientRect().left, clientY: c.getBoundingClientRect().top }, tokenTipLines(t, lag)));
+    c.addEventListener('blur', hideTip);
+    return c;
+  }));
+  // per-lag matrix: one column per token, one row per lag with the trainer's log r (coloured like the strip)
+  const lags = d.lags.length ? d.lags : [];
+  const rowsM = [
+    el('tr', { class: 'tok' }, el('th', {}, 'token'), ...d.tokens.map((t) => el('td', {}, t.text === null ? String(t.token_id) : visible(t.text) || '·'))),
+    el('tr', {}, el('th', {}, 'position'), ...d.tokens.map((t) => el('td', { class: 'num' }, t.position))),
+    el('tr', {}, el('th', {}, 'engine log p'), ...d.tokens.map((t) => el('td', { class: 'num' }, fmtLp(t.float_informational.behavior_logprob)))),
+    ...lags.flatMap((L) => {
+      const k = String(L);
+      return [
+        el('tr', { class: k === lag ? 'sel' : '' }, el('th', {}, `lag ${L} · trainer log p`), ...d.tokens.map((t) => { const s = t.scores[k]; return el('td', { class: 'num ' + (s ? '' : 'none') }, s ? fmtLp(s.float_informational.logprob) : '·'); })),
+        el('tr', { class: k === lag ? 'sel' : '' }, el('th', {}, `lag ${L} · log r`), ...d.tokens.map((t) => {
+          const s = t.scores[k]; if (!s) return el('td', { class: 'num none' }, '·');
+          const h = heatStyle(s.float_informational.log_ratio), v = s.float_informational.log_ratio;
+          const td = el('td', { class: 'num ' + (s.confident_disagreement ? 'conf' : '') + (h.white ? ' inkwhite' : ''), style: `background:${h.bg}` }, (v >= 0 ? '+' : '') + fmtLp(v));
+          td.addEventListener('mousemove', (e) => showTip(e, tokenTipLines(t, lag))); td.addEventListener('mouseleave', hideTip);
+          return td;
+        })),
+      ];
+    }),
+  ];
+  const matrix = el('div', { class: 'matrix-wrap' }, el('table', { class: 'matrix' }, el('tbody', {}, ...rowsM)));
+  body.replaceChildren(headEl, prompt, legend, strip, matrix);
+}
+
+// ---- interactions ----------------------------------------------------------------------------------------
+function setLag(lag) { state.lag = lag; state.offset = 0; writeHash(); renderControls(); renderLagTable(); renderSparks(); loadSequences(); if (state.detail) renderDetail(); }
+function setStep(step) { state.step = step; state.offset = 0; writeHash(); renderControls(); renderSparks(); loadSequences(); }
+function setSort(sort) { if (state.sort === sort) state.order = state.order === 'desc' ? 'asc' : 'desc'; else { state.sort = sort; state.order = 'desc'; } state.offset = 0; writeHash(); loadSequences(); }
+
+async function init() {
+  readHash();
+  try {
+    [state.doctor, state.steps, state.record] = await Promise.all([api('/api/doctor'), api('/api/steps'), api('/api/record')]);
+  } catch (e) {
+    $('runline').textContent = 'could not load the record: ' + e.message;
+    $('record-body').replaceChildren(el('div', { class: 'err' }, String(e.message)));
+    return;
+  }
+  if (!state.doctor.decomposition.lags.includes(state.lag)) state.lag = state.doctor.decomposition.lags[0] ?? 0;
+  renderRecord(); renderControls(); renderDiagnosis(); renderLagTable(); renderSparks();
+  await loadSequences();
+  if (state.seq) openSequence(state.seq);
+}
+init();
+</script>
+</body>
+</html>
