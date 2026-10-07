@@ -9,7 +9,7 @@ What it produces (under benchmarks/modal/results/<run>/):
   trainer_log.json      TRL's log history
 
 Setup:
-  model   Qwen/Qwen2.5-0.5B-Instruct, trainer in float32, vLLM serves bf16 in-process
+  model   Qwen/Qwen2.5-0.5B-Instruct, fp32 master weights under bf16 autocast, vLLM serves bf16 in-process
   GPU     one A10G; TRL 1.13.0, vLLM 0.28.0
   TRL     use_vllm=True, vllm_mode="colocate", vllm_importance_sampling_correction=False
           (the loss never reads sampling logprobs; the recorder still records them)
@@ -32,11 +32,16 @@ Usage
                                                                    # override also hits the trainer's backward; may fail)
   modal run benchmarks/modal/trl_grpo_vllm.py --max-steps 24
   modal run benchmarks/modal/trl_grpo_vllm.py --tag probe            # keep the result dir separate
-  modal run benchmarks/modal/trl_grpo_vllm.py --trainer-bf16         # bf16 autocast in the trainer
+  modal run benchmarks/modal/trl_grpo_vllm.py --fp32-trainer         # the first run's misconfiguration
 
-Every run also writes sync_probe.json: at each weight sync, every vLLM parameter
-compared elementwise with the trainer's (sync_probe.py), which is how the stale
-engine of the first run was diagnosed (docs/findings/2026-10-06-trl-colocate-sync.md).
+Precision. The trainer runs under bf16 autocast (GRPOConfig bf16=True) so that its
+forward sees the same bf16-rounded weights vLLM holds. The first run (2026-10-06) used
+an fp32 forward (bf16=False) against the bf16 engine: Adam updates of ~1e-5 per weight
+are below the bf16 ulp of most weights, so the synced engine stayed within numerics of
+the initial checkpoint while the fp32 trainer moved by a nat. That looked like a stale
+engine and was not one; see docs/findings/2026-10-06-trl-colocate-sync.md.
+--fp32-trainer reproduces it. Every run also writes sync_probe.json: at each weight
+sync, every vLLM parameter compared elementwise with the trainer's (sync_probe.py).
 """
 from __future__ import annotations
 
@@ -116,7 +121,7 @@ def _worst_tokens(ledger, tokenizer, n: int = 40) -> list[dict]:
 
 @app.function(image=image, gpu=GPU, timeout=60 * 60, memory=32768, volumes={"/hf_cache": hf_cache})
 def run_grpo(max_steps: int = 16, seed: int = 0, temperature: float = 1.0, batch_invariant: bool = False,
-             trainer_bf16: bool = False) -> dict:
+             fp32_trainer: bool = False) -> dict:
     import torch
     from sync_probe import SyncProbe
     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -138,7 +143,7 @@ def run_grpo(max_steps: int = 16, seed: int = 0, temperature: float = 1.0, batch
         output_dir=str(work / "out"), seed=seed, max_steps=max_steps, logging_steps=1,
         per_device_train_batch_size=8, gradient_accumulation_steps=1, num_generations=8,
         max_completion_length=16, temperature=temperature, learning_rate=5e-6,
-        num_iterations=2, steps_per_generation=2, report_to=[], save_strategy="no", bf16=trainer_bf16,
+        num_iterations=2, steps_per_generation=2, report_to=[], save_strategy="no", bf16=not fp32_trainer,
         use_vllm=True, vllm_mode="colocate", vllm_gpu_memory_utilization=0.3, vllm_max_model_length=512,
         vllm_importance_sampling_correction=False,
     )
@@ -168,17 +173,17 @@ def run_grpo(max_steps: int = 16, seed: int = 0, temperature: float = 1.0, batch
         "tokens_db": (work / "ws" / "tokens.db").read_bytes(),
         "config": {"model": MODEL_ID, "vllm": VLLM_VERSION, "trl": "1.13.0", "gpu": GPU, "vllm_mode": "colocate",
                    "max_steps": max_steps, "seed": seed, "temperature": temperature,
-                   "batch_invariant": batch_invariant, "trainer_bf16": trainer_bf16,
+                   "batch_invariant": batch_invariant, "trainer_bf16": not fp32_trainer,
                    "num_iterations": 2, "steps_per_generation": 2},
     }
 
 
 @app.local_entrypoint()
 def main(max_steps: int = 16, seed: int = 0, temperature: float = 1.0, batch_invariant: bool = False,
-         trainer_bf16: bool = False, tag: str = ""):
+         fp32_trainer: bool = False, tag: str = ""):
     res = run_grpo.remote(max_steps=max_steps, seed=seed, temperature=temperature, batch_invariant=batch_invariant,
-                          trainer_bf16=trainer_bf16)
-    tag = f"_t{temperature}" + ("_bi" if batch_invariant else "") + ("_bf16" if trainer_bf16 else "") + (f"_{tag}" if tag else "")
+                          fp32_trainer=fp32_trainer)
+    tag = f"_t{temperature}" + ("_bi" if batch_invariant else "") + ("_fp32" if fp32_trainer else "") + (f"_{tag}" if tag else "")
     out = RESULTS_DIR / f"trl_grpo_vllm_a10g_{max_steps}steps_seed{seed}{tag}"
     out.mkdir(parents=True, exist_ok=True)
     (out / "tokens.db").write_bytes(res.pop("tokens_db"))
