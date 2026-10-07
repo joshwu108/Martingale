@@ -117,3 +117,53 @@ Every result is scoped to the constraints below.
 - The stale-engine finding on TRL 1.13 colocate + vLLM 0.28 is one model,
   one seed, one version pair; the mechanism inside TRL's weight sync has not
   been diagnosed.
+
+## Replayed rows (`src/martingale/record/replay.py`, replay-buffer provenance)
+
+- **The buffer's draw is the buffer's claim.** The record binds `draw_id`,
+  `content_digest`, the importance weight and the rescale into the sequence
+  digest, so none of them can change afterwards. It does not and cannot verify
+  that `draw_id` names a draw the buffer actually made, that the draw followed
+  the buffer's declared priorities or admission policy, or that
+  `content_digest` is the digest of this row under the buffer's own digest
+  function: the record never sees the buffer's sampler or its log. Those are
+  the buffer's checker's job (Reservoir's `reservoir-verify` over its own
+  attestation log); the two records are joined by draw id and content digest,
+  and that join is a manual step with no tool behind it yet.
+- **The weight is what the buffer reported.** The checker verifies that the
+  importance weight and the rescale are bound and well-formed (reduced,
+  non-negative, positive rescale), not that the weight equals the true
+  importance ratio, nor that the rescale reached the loss (Reservoir's batch
+  witness covers the tensors the loss consumed). The doctor's declared-versus-
+  measured comparison is a float report with a heuristic threshold (1 nat of
+  per-row dispersion after centring per train step); it cannot tell a buffer
+  computing ratios against the wrong revision from a buffer whose stored
+  log-probs come from a different source than the engine's (trainer forward
+  versus vLLM sampler), and because buffers normalise weights per batch only
+  the centred dispersion is meaningful, not the raw mean.
+- **Origin binding holds only inside one record.** A replayed row names the
+  fresh sequence it copies only when that sequence is in the same `tokens.db`;
+  a row restored from another run, or from a buffer filled before the recorder
+  attached, has no origin and its behaviour bits are the buffer's claim. The
+  trainer-level lookup matches a fresh sequence by prompt, completion and
+  generation step; two identical rows in one generation are told apart only by
+  the behaviour log-probs the buffer passes, and when the buffer's log-probs
+  come from a different source than the record's bits (trainer forward versus
+  vLLM sampler) no row matches and the row is skipped rather than guessed.
+- **A copy witnesses its origin's digest, not its scores.** Re-signing anything
+  inside the origin (tokens, reward, header) or deleting it is caught through
+  the copy without an anchor; the origin's score chain hangs off the digest and
+  is not witnessed. Dropping the replay block or the origin from a copy and
+  re-signing it is caught only with the anchor.
+- **Lag is from the record, age is from the buffer.** A replayed token's lag is
+  the train revision's step minus the recorded behaviour revision's step; the
+  buffer's own notion of age (`max_policy_age`, model versions) is not read.
+- **Everything true of fresh rows stays true.** The token draw is not
+  verifiable; the behaviour log-probs are whatever the engine reported when the
+  row was fresh; the lag-0 floor assumptions carry over to the replayed bucket,
+  which borrows the fresh floor when it has no lag-0 tokens of its own.
+- **No real run with replayed rows yet.** The evidence is the fake-trainer test
+  (`tests/test_trl_replayed.py`), the record and checker tests, and the mutation
+  campaign. D2's acceptance in Reservoir's plan (one TRL run with both adapters
+  whose record both checkers accept and whose doctor report shows the replayed
+  bucket) waits on the Reservoir-side wiring in `docs/replay-provenance.md` §4.

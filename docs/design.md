@@ -506,3 +506,46 @@ rejected with the anchored head; 82/90 without, the survivors being the
 re-signed, trailing-deletion and unreferenced-revision classes the anchor
 exists for), and `tests/test_prod_checker.py` (the production actor's record
 passes the independent checker).
+
+### 7.11 Replayed rows (IMPLEMENTED 2026-10-06; Reservoir D2)
+
+A replay buffer that hands the trainer a stored row registers it as a
+`SequenceRecord` with provenance `replayed` and a `ReplayProvenance` block
+inside the digest (`src/martingale/record/replay.py`, contract in
+`docs/replay-provenance.md`):
+
+| Field | Meaning | Digested |
+|---|---|---|
+| `provenance` | `"replayed"`; absent on fresh rows, whose canonical form is unchanged | yes |
+| `replay.draw_id` | the buffer's draw identifier (opaque string) | yes |
+| `replay.content_digest` | the buffer's content digest of the row (64 hex) | yes |
+| `replay.is_weight_num/den` | importance weight the buffer applied, exact reduced fraction | yes |
+| `replay.rescale_num/den` | policy rescale of that weight (1/1 when none), exact reduced fraction | yes |
+| `replay.origin_digest` | the fresh sequence in this record the row copies, or null | yes |
+
+The tokens of a replayed row are the origin's tokens (revision digest, token
+id, log-prob bits, top-k) copied verbatim (`Recorder.replay_from`), or the
+buffer's own copy when the origin is not in this record (`Recorder.replayed`,
+origin null). The ledger refuses, in one transaction, a missing or replayed
+origin and any token or prompt that differs from it.
+
+Checker (tier 1) additions: the block's keys and value shapes, the agreement of
+`provenance` and the block, and, in a second pass over the verified files, the
+origin binding (origin present, verified, fresh, equal in prompt and tokens).
+Because the copy binds the origin's digest, re-signing or deleting the origin
+is caught without an anchor; the origin's scores are not. Dropping the block
+from a replayed row and re-signing it, or dropping only its origin, is the
+weaker-claim class the anchor exists for. Evidence:
+`results/mutation_tokens_report.json` (120/120 anchored, 115/120 unanchored;
+the unanchored survivors are `drop_unreferenced_manifest`, `seq_scores_null`,
+`resigned_score`, `resigned_copy_origin_dropped`, `resigned_replay_block_removed`).
+
+Doctor: `decompose()` adds `by_provenance` (per-lag buckets and attribution per
+provenance; a replayed bucket without lag-0 tokens borrows the fresh floor,
+`floor_source` says so), `replayed` (declared applied weights vs ratios
+measured from the trainer's scores, per-step-centred dispersion) and
+`n_replayed_sequences`; `StepDiagnosis` adds `by_provenance` and
+`cumulative_by_provenance` and `martingale/replayed_*` metrics. `by_lag` and the
+existing keys are unchanged. `MartingaleRecorder.register_replayed` is the
+trainer-level entry; a negative `martingale_row_id` marks a row the buffer
+could not register and the loss path skips it.
