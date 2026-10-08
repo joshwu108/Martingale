@@ -47,3 +47,19 @@ jobs:
         run: curl -sSL -o /tmp/tla2tools.jar https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar
       - name: Model-check RevisionPin (invariant holds) and RevisionPinWeakened (counterexample)
         run: TLC_JAR=/tmp/tla2tools.jar bash spec/check.sh
+
+  pinned-frameworks:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.11"
+          enable-cache: true
+      - name: Install pinned TRL and verl on CPU
+        run: |
+          uv sync --locked
+          uv pip install --python .venv/bin/python 'trl==1.13.0' 'verl==0.9.1'
+      - name: Fake trainer and real class smoke tests
+        run: uv run --no-sync pytest tests/test_trl_integration.py tests/test_trl_monitor.py tests/test_verl_integration.py tests/test_verl_monitor.py -q

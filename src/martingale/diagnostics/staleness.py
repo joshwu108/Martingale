@@ -13,6 +13,14 @@ Tokens at lag 0 were scored by the same weights that generated them: any
 nonzero log-ratio there is engine-versus-trainer mismatch, not staleness.
 That bucket is the floor against which the lag >= 1 buckets are read.
 
+Rows a replay buffer handed the trainer (provenance "replayed", see
+record/replay.py) are bucketed by lag like every other row, and the same
+statistics are repeated per provenance so fresh and replayed rows can be
+read side by side; the replayed bucket borrows the fresh lag-0 floor when it
+has no lag-0 tokens of its own (same engine, same trainer). The buffer's
+declared sequence weights are compared with the sequence log-ratios the
+trainer's scores actually measure (`replayed_weights`).
+
 Exactness: log-ratios are computed as Fractions. Everything that needs exp()
 (ratios, ESS, clip fractions) is float64 at a declared boundary and labelled
 as such in the report.
@@ -44,6 +52,7 @@ class ScoredToken:
     log_ratio: Fraction           # exact
     mixed_sequence: bool
     behavior_logprob: Fraction = Fraction(0)
+    provenance: str = "fresh"     # "fresh" | "replayed" (SequenceRecord.provenance)
 
     @property
     def confident_disagreement(self) -> bool:
@@ -76,6 +85,7 @@ def scored_tokens(ledger: TokenLedger) -> Iterable[ScoredToken]:
                 behavior_step=step_of(tok.revision_digest), train_step=step_of(s.train_revision_digest),
                 log_ratio=bits_to_fraction(s.logprob_bits) - bits_to_fraction(tok.logprob_bits),
                 mixed_sequence=mixed, behavior_logprob=bits_to_fraction(tok.logprob_bits),
+                provenance=seq.provenance,
             )
 
 
@@ -150,24 +160,33 @@ def _pct(sorted_vals: list[float], q: float) -> float:
 
 
 def decompose(ledger: TokenLedger, eps: tuple[float, ...] = DEFAULT_EPS) -> dict:
-    """Bucket every scored token by lag and summarise; lag 0 is the engine-mismatch floor."""
+    """Bucket every scored token by lag and summarise; lag 0 is the engine-mismatch floor.
+
+    `by_lag` covers every scored token; `by_provenance` repeats the buckets for fresh and for
+    replayed rows (only the provenances present); `replayed` compares the buffer's declared
+    sequence weights with what the trainer's scores measure (None without replayed rows).
+    """
     buckets: dict[int, Bucket] = {}
     n_unscored_sequences = 0
     by_train_step: dict[int, Bucket] = {}
+    by_prov: dict[str, dict[int, Bucket]] = {}
     n_negative_lag = 0
     for t in scored_tokens(ledger):
         if t.lag < 0:
             n_negative_lag += 1
         buckets.setdefault(t.lag, Bucket(t.lag)).add(t)
         by_train_step.setdefault(t.train_step, Bucket(t.train_step)).add(t)
+        by_prov.setdefault(t.provenance, {}).setdefault(t.lag, Bucket(t.lag)).add(t)
     n_sequences = ledger.count_sequences()
     scored_seqs = {d for b in buckets.values() for d in b._seqs}
     n_unscored_sequences = n_sequences - len(scored_seqs)
     lags = sorted(buckets)
     floor = buckets[0].summary(eps) if 0 in buckets else None
+    n_replayed = ledger.count_replayed_sequences()
     return {
         "n_sequences": n_sequences,
         "n_unscored_sequences": n_unscored_sequences,
+        "n_replayed_sequences": n_replayed,
         "n_scored_tokens": sum(b.n_tokens for b in buckets.values()),
         "n_mixed_sequences": sum(1 for s in ledger.all_sequences() if s.is_mixed_revision),
         "lags": lags,
@@ -175,25 +194,144 @@ def decompose(ledger: TokenLedger, eps: tuple[float, ...] = DEFAULT_EPS) -> dict
         "by_lag": [buckets[lag].summary(eps) for lag in lags],
         "by_train_step": [{**by_train_step[s].summary(eps), "train_step": s, "lag": None} for s in sorted(by_train_step)],
         "lag0_floor": floor,
+        "by_provenance": _by_provenance(by_prov, eps),
+        "replayed": replayed_weights(ledger) if n_replayed else None,
         "n_negative_lag_tokens": n_negative_lag,
         "eps": list(eps),
         "notes": [
             "log-ratios are exact Fractions of recorded bits; fields under float_informational use float64 exp()",
             "lag 0 tokens were scored by the weights that generated them: their log-ratio is engine mismatch, not staleness",
             "a negative lag means a token was scored by an older step than generated it (resume or mislabel); inspect",
-            "memory is O(scored tokens): one float per token is kept for percentiles",
+            "memory is O(scored tokens): one float per token is kept for percentiles, plus four numbers per replayed sequence",
+            "by_lag covers fresh and replayed rows together; by_provenance repeats the buckets per provenance, and a "
+            "replayed bucket without lag-0 tokens borrows the fresh floor (floor_source says which)",
         ],
     }
 
 
-def attribute(d: dict) -> dict:
+def _by_provenance(by_prov: dict[str, dict[int, Bucket]], eps: tuple[float, ...]) -> dict:
+    """Per-provenance lag buckets with their own attribution; the replayed bucket borrows the fresh floor."""
+    fresh = by_prov.get("fresh", {})
+    fresh_floor = Fraction(fresh[0].summary(eps)["mean_abs_log_ratio"]) if 0 in fresh else None
+    out: dict[str, dict] = {}
+    for prov in sorted(by_prov):
+        pb = by_prov[prov]
+        by_lag = [pb[lag].summary(eps) for lag in sorted(pb)]
+        own = pb[0].summary(eps) if 0 in pb else None
+        partial = {"by_lag": by_lag, "lag0_floor": own}
+        if own is not None:
+            attribution = attribute(partial)
+        elif prov != "fresh" and fresh_floor is not None:
+            attribution = attribute(partial, floor=fresh_floor, floor_source="fresh lag-0")
+        else:
+            attribution = attribute(partial)
+        out[prov] = {
+            "by_lag": by_lag, "lag0_floor": own,
+            "n_scored_tokens": sum(b.n_tokens for b in pb.values()),
+            "n_sequences": len(set().union(*(b._seqs for b in pb.values()))),
+            "attribution": attribution,
+        }
+    return out
+
+
+def replayed_weights(ledger: TokenLedger) -> dict:
+    """The buffer's declared sequence weights against the ratios the trainer's scores measure.
+
+    For every replayed sequence scored completely under some train revision (the earliest, if several),
+    the measured sequence log-ratio is the exact sum over tokens of (train - behaviour) log-prob bits.
+    `declared_ess_fraction` is the ESS/n of the applied weights (importance weight times rescale), what
+    the loss saw; `measured_ess_fraction` the ESS/n of exp(measured log-ratio), both over the rows whose
+    numbers are representable in float64 (`n_overflow` counts the rest). Buffers normalise their
+    weights per batch, so the comparison of log(declared importance weight) with the measured log-ratio
+    is centred per train step, over steps with at least two comparable rows (`n_dispersion_rows`),
+    before its mean absolute deviation is reported as `log_weight_dispersion`. Floats: a report, not a verdict.
+    """
+    steps: dict[str, int] = {}
+
+    def step_of(digest: str) -> int:
+        if digest not in steps:
+            steps[digest] = ledger.get_revision(digest).step
+        return steps[digest]
+
+    n_seqs = n_scored = n_without_origin = 0
+    rows: list[tuple[int, Fraction, Fraction, Fraction]] = []     # (train step, is_weight, applied, measured log-ratio)
+    for seq in ledger.all_sequences():
+        if seq.replay is None:
+            continue
+        n_seqs += 1
+        if seq.replay.origin_digest is None:
+            n_without_origin += 1
+        by_rev: dict[str, dict[int, str]] = {}
+        for sc in ledger.scores_for(seq.digest):
+            by_rev.setdefault(sc.train_revision_digest, {})[sc.position] = sc.logprob_bits
+        complete = [(step_of(rd), rd) for rd, m in by_rev.items() if len(m) == len(seq.tokens)]
+        if not complete:
+            continue
+        n_scored += 1
+        t_step, rd = min(complete)
+        measured = sum((bits_to_fraction(by_rev[rd][p]) - bits_to_fraction(tok.logprob_bits)
+                        for p, tok in enumerate(seq.tokens)), Fraction(0))
+        rows.append((t_step, seq.replay.is_weight, seq.replay.applied_weight, measured))
+    return {"n_sequences": n_seqs, "n_scored_sequences": n_scored, "n_without_origin": n_without_origin,
+            "sequence_weights": _weight_summary(rows)}
+
+
+def _ess_fraction(weights: list[float]) -> float | None:
+    """ESS/n of non-negative weights; None when there are none or they are all zero."""
+    s1, s2 = sum(weights), sum(w * w for w in weights)
+    return (s1 * s1 / s2) / len(weights) if weights and s2 > 0 and math.isfinite(s2) else None
+
+
+def _as_float(x: Fraction) -> float | None:
+    """The declared float boundary: None when the exact value has no finite float64 image."""
+    try:
+        f = float(x)
+    except OverflowError:
+        return None
+    return f if math.isfinite(f) else None
+
+
+def _weight_summary(rows: list[tuple[int, Fraction, Fraction, Fraction]]) -> dict:
+    n = len(rows)
+    finite: list[tuple[int, float, float, float]] = []        # (step, is_weight, applied, measured) as floats
+    for t_step, w, applied, measured in rows:
+        wf, af, mf = _as_float(w), _as_float(applied), _as_float(measured)
+        if wf is None or af is None or mf is None or abs(mf) > MAX_EXP:
+            continue
+        finite.append((t_step, wf, af, mf))
+    comparable = [r for r in finite if r[1] > 0]               # log of a zero (or underflowed) weight is undefined
+    deltas: dict[int, list[float]] = {}
+    for t_step, wf, _af, mf in comparable:
+        deltas.setdefault(t_step, []).append(math.log(wf) - mf)
+    flat = [x for xs in deltas.values() for x in xs]
+    centred = [x - sum(xs) / len(xs) for xs in deltas.values() if len(xs) >= 2 for x in xs]
+    return {
+        "n": n, "n_train_steps": len({r[0] for r in rows}), "n_overflow": n - len(finite),
+        "n_zero_weight": len(finite) - len(comparable), "n_dispersion_rows": len(centred),
+        "declared_ess_fraction": _ess_fraction([r[2] for r in finite]),
+        "measured_ess_fraction": _ess_fraction([math.exp(r[3]) for r in finite]),
+        "mean_log_declared_minus_measured": (sum(flat) / len(flat)) if flat else None,
+        "log_weight_dispersion": (sum(abs(x) for x in centred) / len(centred)) if centred else None,
+    }
+
+
+def _fmt(x: float | None, spec: str = ".2f") -> str:
+    return "n/a" if x is None else format(x, spec)
+
+
+def attribute(d: dict, floor: Fraction | None = None, floor_source: str | None = None) -> dict:
     """Split total |log-ratio| mass into the lag-0 engine floor and the staleness excess above it.
 
     Exact: uses the Fraction mean-abs per bucket. floor = lag-0 mean |log r|; for every lag > 0
     bucket, excess = max(0, mean_abs - floor) * n_tokens. Shares are of the total mean-abs mass
-    over lag > 0 tokens. If there are no lag-0 tokens the floor is unknown and shares are None.
+    over lag > 0 tokens. If there are no lag-0 tokens the floor is unknown and shares are None,
+    unless a `floor` measured elsewhere is passed in (`floor_source` names where it came from).
     """
-    floor = None if d["lag0_floor"] is None else Fraction(d["lag0_floor"]["mean_abs_log_ratio"])
+    if floor is not None:
+        floor_source = floor_source or "given"
+    else:
+        floor = None if d["lag0_floor"] is None else Fraction(d["lag0_floor"]["mean_abs_log_ratio"])
+        floor_source = None if floor is None else "own lag-0"
     total = Fraction(0)
     excess = Fraction(0)
     n_stale = 0
@@ -211,6 +349,7 @@ def attribute(d: dict) -> dict:
         share_stale = excess / total
     return {
         "floor_mean_abs_log_ratio": None if floor is None else _fs(floor),
+        "floor_source": floor_source,
         "stale_tokens": n_stale,
         "staleness_share": None if share_stale is None else _fs(share_stale),
         "engine_share": None if share_stale is None else _fs(1 - share_stale),
@@ -277,4 +416,45 @@ def diagnosis(d: dict, eps: float = 0.2) -> list[str]:
     if d["n_mixed_sequences"]:
         lines.append(f"{d['n_mixed_sequences']} sequences span a weight update (in-flight sync); their tokens carry "
                      "two revisions and are bucketed by their own lag.")
+    lines.extend(replayed_diagnosis(d))
+    return lines
+
+
+REPLAY_DISAGREEMENT_NATS = 1.0   # heuristic: per-row dispersion of log(declared) - log(measured) beyond this is named
+
+
+def replayed_diagnosis(d: dict) -> list[str]:
+    """Plain-language lines about the replayed rows; empty when the record has none."""
+    r = d.get("replayed")
+    if not r:
+        return []
+    rp = d.get("by_provenance", {}).get("replayed")
+    lines: list[str] = []
+    n_tok = rp["n_scored_tokens"] if rp else 0
+    share = (n_tok / d["n_scored_tokens"]) if d.get("n_scored_tokens") else 0.0
+    head = f"Replayed rows: {r['n_sequences']} sequences ({n_tok} scored tokens, {100 * share:.0f}% of scored tokens)"
+    if rp:
+        lags = [b["lag"] for b in rp["by_lag"]]
+        worst = min(rp["by_lag"], key=lambda b: b["float_informational"]["ess_fraction"])
+        head += (f" at lags {lags[0]}..{lags[-1]}; lowest token-level ESS/n {worst['float_informational']['ess_fraction']:.2f} "
+                 f"at lag {worst['lag']}")
+        fresh = d["by_provenance"].get("fresh")
+        same = [b for b in (fresh["by_lag"] if fresh else []) if b["lag"] == worst["lag"]]
+        if same:
+            head += f" (fresh rows at that lag: {same[0]['float_informational']['ess_fraction']:.2f})"
+    w = r["sequence_weights"]
+    if w["n"]:
+        head += (f". The buffer's declared weights give a sequence-level ESS/n of {_fmt(w['declared_ess_fraction'])} over "
+                 f"{w['n']} rows; the trainer's scores measure {_fmt(w['measured_ess_fraction'])}")
+    lines.append(head + ".")
+    disp = w.get("log_weight_dispersion")
+    if w.get("n_dispersion_rows", 0) >= 2 and disp is not None and disp > REPLAY_DISAGREEMENT_NATS:
+        lines.append(f"The buffer's declared importance weights and the ratios measured from the trainer's scores "
+                     f"disagree by {disp:.2f} nats per row after removing the per-step normaliser (over "
+                     f"{w['n_dispersion_rows']} rows in steps with at least two replayed rows; heuristic threshold "
+                     f"{REPLAY_DISAGREEMENT_NATS:g}): the buffer may be computing its ratios against the wrong "
+                     "revision, or its stored behaviour log-probs come from a different source than the engine's.")
+    if r["n_without_origin"]:
+        lines.append(f"{r['n_without_origin']} replayed sequences have no fresh origin in this record: their "
+                     "behaviour log-probs are the buffer's claim, not bound to a recorded generation.")
     return lines

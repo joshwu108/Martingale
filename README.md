@@ -12,9 +12,10 @@ trainer later thought.
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 
-> **Status (2026-10-06).** Record, live diagnosis with alarms, TRL `GRPOTrainer`
-> integration and an exact estimator bench are implemented and tested with
-> `make check`. Four real TRL + vLLM runs on Modal completed and verified;
+> **Status (2026-10-07).** Record, live diagnosis with alarms, TRL `GRPOTrainer`
+> integration, a verl 0.9.1 hook pair and an exact estimator bench are implemented
+> and tested (`make check`: ruff, mypy, full test suite). Four real TRL + vLLM runs on
+> Modal completed and verified;
 > their numbers are below. Claims map to artifacts in
 > [`paper/claim_evidence.md`](paper/claim_evidence.md); limits in
 > [`docs/nonclaims.md`](docs/nonclaims.md).
@@ -93,7 +94,31 @@ trainer, or a weight sync silently failed. The last year of papers (TIS/MIS, the
 FP16 fix, VeXact, CISPO, GSPO, IcePop, A-3PO, staleness scaling laws, Missing Old
 Logits) is about exactly this, and the tooling is still scripts.
 
-## Use it with TRL
+## Use it with TRL or verl
+
+Install the framework separately: `uv pip install 'trl==1.13.0'` or
+`uv pip install 'verl==0.9.1'` (verl may require CUDA wheels). For verl, call the
+two hooks where its driver receives a generated `DataProto` and where the actor
+loss receives live log-probs:
+
+```python
+from martingale.integrations.verl import MartingaleMonitor, MartingaleVerlRecorder, wrap_ppo_loss
+
+flight = MartingaleVerlRecorder("./martingale_ws", tokenizer=tokenizer)
+flight.on_rollout(generated_batch, step=optimizer_step, weights=full_actor_state)
+worker.set_loss_fn(wrap_ppo_loss(worker.loss_fn, flight,
+                                 step=lambda: optimizer_step,
+                                 weights=lambda: full_actor_state))
+monitor = MartingaleMonitor(flight)
+monitor.on_step_end(optimizer_step, metrics.update)
+```
+
+`full_actor_state` must be the full, unsharded weights at each optimizer version;
+the actor hook needs the same row IDs and a shared recorder workspace accessible
+to its process. See [the verl integration notes](docs/verl-integration-notes.md) for wiring
+and current limits.
+
+### TRL
 
 ```python
 from trl import GRPOConfig
@@ -132,13 +157,21 @@ Weights & Biases shows them), and raises on an error-level alarm unless you pass
 
 Each checkpoint gets a `martingale_head.txt` so a resumed run anchors on the right head.
 
+A replay buffer that hands the trainer stored rows registers each one with
+`flight.register_replayed(...)`; the doctor then shows a `replayed` bucket next
+to the fresh rows (lag, floor, ESS per bucket, the buffer's declared weights
+against the ratios the trainer's scores measure, `martingale/replayed_*`
+metrics) and the checker verifies that every replayed row is the fresh
+generation it claims to copy. The contract a buffer implements is in
+[`docs/replay-provenance.md`](docs/replay-provenance.md).
+
 Per batch row it records the unpadded prompt, every completion token, the
 behavior log-prob bits (vLLM's sampling log-probs when present, else TRL's
 old log-probs, else a no-grad pass; which one is bound into the revision), a
 digest of the generating weights plus tokenizer and sampler config, and TRL's
 advantage. At update time it records the trainer's log-prob per token under the
-weights it trained with. Tested against TRL 1.13.0; `integrations/verl.py` and
-`integrations/lightning.py` publish revisions only, a verl adapter is next.
+weights it trained with. Tested against TRL 1.13.0; the verl 0.9.1 hook pair is
+fake-trainer tested. `integrations/lightning.py` publishes revisions only.
 
 ## Test your own correction (exact, no floats)
 
@@ -181,9 +214,12 @@ transfers to neural policies by itself.
 
 The record is append-only and hash-chained, and `martingale verify --dir ws --head <head>`
 runs an independent checker (`checker/`, imports nothing from `martingale`) that
-re-derives every digest. 90 of 90 single-fault forgeries are rejected when the
-head printed by the trainer is supplied (`campaigns/mutation_tokens.py`). The
-checker verifies binding, not the draw: an engine does not expose a keyed draw,
+re-derives every digest. 120 of 120 single-fault forgeries are rejected when the
+head printed by the trainer is supplied (`campaigns/mutation_tokens.py`), 115
+without it. Rows a replay buffer hands the trainer sit in the same record with
+provenance `replayed` and the buffer's draw id, content digest and importance
+weight bound into the chain ([`docs/replay-provenance.md`](docs/replay-provenance.md)).
+The checker verifies binding, not the draw: an engine does not expose a keyed draw,
 so "this token was sampled from that distribution" is not a claim (non-claims).
 Underneath is the exact-arithmetic research core the project started as (rational
 MDPs, exact expected gradients, keyed draws, a TLA+ model of pin-before-draw with
@@ -220,7 +256,7 @@ campaigns/         identity, staleness, boundary, float_baselines, mutation, mut
                    interleave, estimator_bench, e2e_demo
 results/           committed evidence (JSON reports)
 spec/              TLA+ models, .cfg files, check.sh (run in CI)
-docs/              design.md, preregistration.md, nonclaims.md
+docs/              design.md, preregistration.md, nonclaims.md, replay-provenance.md
 paper/             claim_evidence.md
 benchmarks/modal/  trl_grpo_vllm.py: the real runs on Modal; sync_probe.py: elementwise weight-sync check
 ```

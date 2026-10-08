@@ -11,8 +11,12 @@ then checks an export produced by TokenLedger.export_for_checker():
 Tier 1 verifies BINDING: digests recompute, chains are unbroken, every
 referenced revision exists, positions are contiguous, bits are finite,
 and every token in a sequence was sampled under the same tokenizer and
-sampler config. It cannot and does not verify that a token was actually
-drawn from the recorded distribution (docs/nonclaims.md). Written to reject.
+sampler config. A replayed row (provenance "replayed", a replay block from
+a replay buffer) additionally has a well-formed block inside its digest and,
+when it names an origin, equals that fresh sequence token for token. It
+cannot and does not verify that a token was actually drawn from the recorded
+distribution, nor anything about the buffer's draw (docs/nonclaims.md).
+Written to reject.
 
     python -m checker.verify_tokens <export_dir> --expected-head <ledger head>
 """
@@ -38,7 +42,9 @@ MANIFEST_KEYS = frozenset({"kind", "weights_digest", "tokenizer_digest", "sample
 TOKEN_KEYS = frozenset({"revision_digest", "position", "token_id", "logprob_bits", "topk", "prev_digest", "digest"})
 SEQUENCE_KEYS = frozenset({"actor_id", "sequence_index", "sequence_id", "prompt_digest", "prompt_len",
                            "token_digests", "reward_bits", "prev_sequence_digest", "terminal_digest",
-                           "digest", "tokens", "engine_request_id", "scores", "prompt_ids"})
+                           "digest", "tokens", "engine_request_id", "scores", "prompt_ids", "provenance", "replay"})
+REPLAY_KEYS = frozenset({"draw_id", "content_digest", "is_weight_num", "is_weight_den", "rescale_num", "rescale_den",
+                         "origin_digest"})
 SCORE_KEYS = frozenset({"sequence_digest", "position", "train_revision_digest", "logprob_bits", "prev_digest", "digest"})
 
 
@@ -216,6 +222,51 @@ def _verify_scores(seq: dict, revs: dict[str, dict]) -> list[str]:
     return errs
 
 
+def _verify_replay_block(rp) -> list[str]:
+    """The replay block of a replayed row: exact keys, a non-empty draw id, a hex content digest, reduced
+    non-negative weights (a positive rescale), an optional hex origin digest."""
+    if not isinstance(rp, dict):
+        return ["replay block is not an object"]
+    errs: list[str] = []
+    missing, extra = sorted(REPLAY_KEYS - set(rp)), sorted(set(rp) - REPLAY_KEYS)
+    if missing:
+        errs.append(f"replay block missing keys {missing}")
+    if extra:
+        errs.append(f"replay block has unbound keys {extra}")
+    if errs:
+        return errs
+    if not isinstance(rp["draw_id"], str) or not rp["draw_id"]:
+        errs.append("replay draw_id malformed")
+    if not _is_hex64(rp["content_digest"]):
+        errs.append("replay content_digest malformed")
+    for name, positive in (("is_weight", False), ("rescale", True)):
+        num, den = rp[f"{name}_num"], rp[f"{name}_den"]
+        if not (_is_int(num) and _is_int(den, 1)) or (positive and num == 0):
+            errs.append(f"replay {name} malformed")
+        elif math.gcd(num, den) != 1:
+            errs.append(f"replay {name} is not a reduced fraction")
+    if rp["origin_digest"] is not None and not _is_hex64(rp["origin_digest"]):
+        errs.append("replay origin_digest malformed")
+    return errs
+
+
+def _verify_origin(seq: dict, origin: dict | None) -> list[str]:
+    """A replayed row that names an origin must copy that fresh sequence's prompt and tokens exactly."""
+    od = seq["replay"]["origin_digest"]
+    if origin is None:
+        return [f"replay origin {od[:12]} not in the export (or did not verify)"]
+    if origin.get("replay") is not None:
+        return [f"replay origin {od[:12]} is not a fresh sequence"]
+    if seq["prompt_digest"] != origin["prompt_digest"] or seq["prompt_len"] != origin["prompt_len"]:
+        return ["replayed row differs from its origin: prompt"]
+    if len(seq["tokens"]) != len(origin["tokens"]):
+        return [f"replayed row differs from its origin: {len(seq['tokens'])} vs {len(origin['tokens'])} tokens"]
+    for s, o in zip(seq["tokens"], origin["tokens"]):
+        if any(s.get(k) != o.get(k) for k in ("token_id", "revision_digest", "logprob_bits", "topk")):
+            return [f"replayed row differs from its origin at token {s['position']}"]
+    return []
+
+
 def verify_sequence(seq: dict, revs: dict[str, dict], expected_prev: str, expected_index: int) -> list[str]:
     errs: list[str] = []
     if not isinstance(seq, dict):
@@ -227,6 +278,16 @@ def verify_sequence(seq: dict, revs: dict[str, dict], expected_prev: str, expect
     extra = _extra_keys(seq, SEQUENCE_KEYS)
     if extra:
         errs.append(f"unbound keys {extra}")
+    provenance, replay = seq.get("provenance"), seq.get("replay")
+    if provenance is None:                       # a fresh row: both keys absent, so one digest has one file form
+        if "provenance" in seq or "replay" in seq:
+            errs.append("fresh row carries provenance or replay keys")
+    elif provenance != "replayed":
+        errs.append(f"provenance {provenance!r} is not 'replayed' (fresh rows carry no provenance key)")
+    elif replay is None:
+        errs.append("provenance and replay block disagree")
+    else:
+        errs.extend(_verify_replay_block(replay))
     if not _is_int(seq["actor_id"]) or not isinstance(seq["sequence_id"], str):
         errs.append("actor_id or sequence_id malformed")
     if not _is_int(seq["sequence_index"]) or seq["sequence_index"] != expected_index:
@@ -273,11 +334,15 @@ def verify_sequence(seq: dict, revs: dict[str, dict], expected_prev: str, expect
             errs.append(f"token {t['position']}: tokenizer changed mid-sequence")
         if r["sampler"] != first["sampler"]:
             errs.append(f"token {t['position']}: sampler config changed mid-sequence")
-    computed = _digest({"actor_id": seq["actor_id"], "sequence_index": seq["sequence_index"],
-                        "sequence_id": seq["sequence_id"], "prompt_digest": seq["prompt_digest"],
-                        "prompt_len": seq["prompt_len"], "token_digests": seq["token_digests"],
-                        "reward_bits": seq["reward_bits"], "prev_sequence_digest": seq["prev_sequence_digest"],
-                        "terminal_digest": seq["terminal_digest"]})
+    canon = {"actor_id": seq["actor_id"], "sequence_index": seq["sequence_index"],
+             "sequence_id": seq["sequence_id"], "prompt_digest": seq["prompt_digest"],
+             "prompt_len": seq["prompt_len"], "token_digests": seq["token_digests"],
+             "reward_bits": seq["reward_bits"], "prev_sequence_digest": seq["prev_sequence_digest"],
+             "terminal_digest": seq["terminal_digest"]}
+    if replay is not None:                    # a replayed row digests its provenance and replay block too
+        canon["provenance"] = "replayed"
+        canon["replay"] = {k: replay[k] for k in sorted(REPLAY_KEYS)}
+    computed = _digest(canon)
     if computed != seq["digest"]:
         errs.append("sequence digest mismatch")
     if errs:
@@ -295,8 +360,8 @@ def ledger_head(sequence_heads: dict, score_heads: dict, revision_digests: list)
 def verify_export(export_dir: Path, expected_head: str | None = None) -> dict:
     """Verify a whole export.
 
-    Returns {"ok", "n_revisions", "n_sequences", "n_tokens", "head", "heads": {actor: digest},
-    "errors": {file: [...]}}. `expected_head` is the ledger head the producer published out
+    Returns {"ok", "n_revisions", "n_sequences", "n_replayed_sequences", "n_tokens", "head",
+    "heads": {actor: digest}, "errors": {file: [...]}}. `expected_head` is the ledger head the producer published out
     of band (run log, W&B field). Without it a forger can tamper and re-sign a whole chain,
     delete a trailing sequence, or drop an unreferenced revision; with it any change moves
     the head and is caught. The head is only computed over files that verified.
@@ -308,6 +373,8 @@ def verify_export(export_dir: Path, expected_head: str | None = None) -> dict:
         errors["revisions"] = rev_errs
     heads: dict[int, tuple[str, int]] = {}
     score_heads: dict[str, str] = {}
+    verified: dict[str, Path] = {}                 # digest -> file, for the origin binding of replayed rows
+    replayed: list[tuple[str, dict]] = []
     n_tokens = 0
     n_seq = 0
     for p in _sequence_files(export_dir):
@@ -332,14 +399,25 @@ def verify_export(export_dir: Path, expected_head: str | None = None) -> dict:
             continue
         n_tokens += len(seq["tokens"])
         heads[actor] = (seq["digest"], idx + 1)
+        verified[seq["digest"]] = p
+        if seq.get("replay") is not None:
+            replayed.append((p.name, seq))
         if seq.get("scores"):
             score_heads[seq["digest"]] = seq["scores"][-1]["digest"]
+    for name, seq in replayed:                     # second pass: origins may sit in files read later
+        origin_file = verified.get(seq["replay"]["origin_digest"]) if seq["replay"]["origin_digest"] else None
+        if seq["replay"]["origin_digest"] is not None:
+            origin = None if origin_file is None else json.loads(origin_file.read_text())   # verified above
+            e = _verify_origin(seq, origin)
+            if e:
+                errors.setdefault(name, []).extend(e)
     head_digests = {actor: h for actor, (h, _i) in heads.items()}
     head = ledger_head(head_digests, score_heads, list(revs))
     if expected_head is not None and head != expected_head:
         errors.setdefault("head", []).append(f"ledger head {head} != anchored {expected_head}")
     return {"ok": not errors, "anchored": expected_head is not None, "n_revisions": len(revs),
-            "n_sequences": n_seq, "n_tokens": n_tokens, "head": head, "heads": head_digests, "errors": errors}
+            "n_sequences": n_seq, "n_replayed_sequences": len(replayed), "n_tokens": n_tokens, "head": head,
+            "heads": head_digests, "errors": errors}
 
 
 _SEQ_NAME = __import__("re").compile(r"^actor(\d+)_seq(\d+)\.json$")
