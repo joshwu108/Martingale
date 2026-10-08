@@ -10,10 +10,12 @@ from martingale.diagnostics.staleness import (
     attribute,
     decompose,
     diagnosis,
+    replayed_diagnosis,
+    replayed_weights,
     scored_tokens,
 )
 
 __all__ = ["DEFAULT_EPS", "Alarm", "AlarmConfig", "AlarmHistory", "Bucket", "IncrementalDiagnosis", "MartingaleAlarmError",
            "GenerationAgreement", "RunningBucket", "ScoreFn", "ScoredToken", "StepDiagnosis", "attribute", "decompose",
            "diagnosis", "evaluate", "hf_score_fn", "recompute",
-           "render_markdown", "scored_tokens"]
+           "render_markdown", "replayed_diagnosis", "replayed_weights", "scored_tokens"]
