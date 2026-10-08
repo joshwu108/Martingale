@@ -16,7 +16,7 @@
   This file defines the WEAKENED spec with this counterexample.
 *)
 
-EXTENDS Naturals, Sequences, FiniteSets, TLC
+EXTENDS Naturals, Integers, Sequences, FiniteSets, TLC
 
 CONSTANTS
   Actors, Revisions, Actions
@@ -35,6 +35,7 @@ IDLE == "IDLE"
 PINNED == "PINNED"
 DREW == "DREW"
 APPENDED == "APPENDED"
+MaxRecords == 2  \* Bound the ledger so TLC can exhaust the state graph.
 
 PinInvariant ==
   \A i \in 1..Len(ledger):
@@ -73,6 +74,7 @@ ActorDrawWeakened(a, action) ==
 
 ActorAppend(a) ==
   /\ actor_state[a] = DREW
+  /\ Len(ledger) < MaxRecords
   /\ ledger' = Append(ledger, [
        actor |-> a,
        revision |-> actor_pin[a],

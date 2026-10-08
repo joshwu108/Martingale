@@ -15,7 +15,7 @@
   Learner state: set of published revisions, current revision.
 *)
 
-EXTENDS Naturals, Sequences, FiniteSets, TLC
+EXTENDS Naturals, Integers, Sequences, FiniteSets, TLC
 
 CONSTANTS
   Actors,        \* Set of actor IDs: {0, 1}
@@ -41,6 +41,7 @@ IDLE == "IDLE"
 PINNED == "PINNED"
 DREW == "DREW"
 APPENDED == "APPENDED"
+MaxRecords == 2  \* Bound the ledger so TLC can exhaust the state graph.
 
 TypeOK ==
   /\ actor_state \in [Actors -> {IDLE, PINNED, DREW, APPENDED}]
@@ -101,6 +102,7 @@ ActorDraw(a, action) ==
 \* Actor appends to ledger (DREW → APPENDED)
 ActorAppend(a) ==
   /\ actor_state[a] = DREW
+  /\ Len(ledger) < MaxRecords
   /\ ledger' = Append(ledger, [
        actor |-> a,
        revision |-> actor_pin[a],     \* pinned revision
