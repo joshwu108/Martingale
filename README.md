@@ -75,11 +75,14 @@ forward at a precision the engine's weights cannot represent do. Full artifacts 
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
-uv sync
-uv run martingale demo
+uv tool install martingale
+martingale demo
 ```
 
 The demo records a synthetic run and prints the same kind of diagnosis for it.
+For a source checkout, use `uv sync` and `uv run martingale demo` instead.
+The TRL adapter needs `pip install "martingale[trl]"`; the inspector needs
+`pip install "martingale[server]"`.
 
 ## The problem
 
@@ -258,8 +261,7 @@ paper/             claim_evidence.md
 benchmarks/modal/  trl_grpo_vllm.py: the real runs on Modal; sync_probe.py: elementwise weight-sync check
 ```
 
-`martingale serve` is the old Observatory dashboard over the exact ledger; it
-will be rebuilt as the rollout inspector over the token record.
+`martingale serve` opens the rollout inspector over the token record.
 
 ## Contributing
 
