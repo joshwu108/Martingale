@@ -50,6 +50,9 @@ CREATE TABLE IF NOT EXISTS scores (
 """
 
 
+_NO_LIMIT = 2**62   # SQLite rowids are signed 64-bit; "no upper bound" for the *_since readers
+
+
 def _connect(db_path: Path) -> sqlite3.Connection:
     con = sqlite3.connect(str(db_path), check_same_thread=False, timeout=30.0, isolation_level=None)
     con.execute("PRAGMA journal_mode=WAL")
@@ -153,15 +156,27 @@ class TokenLedger:
     def count_sequences(self) -> int:
         return self._con.execute("SELECT COUNT(*) FROM sequences").fetchone()[0]
 
-    def sequences_since(self, rowid: int) -> list[tuple[int, SequenceRecord]]:
-        """Sequences inserted after `rowid`, in insertion order (for incremental diagnosis)."""
-        rows = self._con.execute("SELECT rowid, record_json FROM sequences WHERE rowid > ? ORDER BY rowid", (rowid,)).fetchall()
+    def sequences_since(self, rowid: int, upto: int | None = None) -> list[tuple[int, SequenceRecord]]:
+        """Sequences inserted after `rowid` (and, with `upto`, at or before it), in insertion order."""
+        rows = self._con.execute("SELECT rowid, record_json FROM sequences WHERE rowid > ? AND rowid <= ? ORDER BY rowid",
+                                 (rowid, _NO_LIMIT if upto is None else upto)).fetchall()
         return [(rid, SequenceRecord.from_dict(json.loads(r))) for rid, r in rows]
 
-    def scores_since(self, rowid: int) -> list[tuple[int, ScoreRecord]]:
-        """Scores inserted after `rowid`, in insertion order."""
-        rows = self._con.execute("SELECT rowid, record_json FROM scores WHERE rowid > ? ORDER BY rowid", (rowid,)).fetchall()
+    def scores_since(self, rowid: int, upto: int | None = None) -> list[tuple[int, ScoreRecord]]:
+        """Scores inserted after `rowid` (and, with `upto`, at or before it), in insertion order."""
+        rows = self._con.execute("SELECT rowid, record_json FROM scores WHERE rowid > ? AND rowid <= ? ORDER BY rowid",
+                                 (rowid, _NO_LIMIT if upto is None else upto)).fetchall()
         return [(rid, ScoreRecord.from_dict(json.loads(r))) for rid, r in rows]
+
+    def score_revisions(self) -> list[tuple[int, str]]:
+        """(rowid, train_revision_digest) of every score in insertion order, without parsing the records."""
+        return list(self._con.execute("SELECT rowid, train_revision_digest FROM scores ORDER BY rowid").fetchall())
+
+    def count_scores(self) -> int:
+        return self._con.execute("SELECT COUNT(*) FROM scores").fetchone()[0]
+
+    def count_revisions(self) -> int:
+        return self._con.execute("SELECT COUNT(*) FROM llm_revisions").fetchone()[0]
 
     # ---- scores ---------------------------------------------------------------
 

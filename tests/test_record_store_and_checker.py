@@ -300,3 +300,24 @@ class TestStoreTransactions:
         (tmp_path / "other").mkdir(); (tmp_path / "other" / "keep.txt").write_text("x")
         with pytest.raises(FileExistsError):
             rec.export_for_checker(tmp_path / "other")
+
+
+# ---- rowid-bounded reads and counts (used by the inspector's monitor replay) ---------------
+
+def test_scores_since_upto_and_counts(tmp_path):
+    from martingale.demo import run_demo
+    from martingale.record import TokenLedger
+    run_demo(tmp_path / "ws", echo=lambda *a, **k: None)
+    tl = TokenLedger(tmp_path / "ws" / "tokens.db")
+    assert tl.count_scores() == 384 and tl.count_revisions() == 4
+    all_rows = tl.scores_since(0)
+    rids = [r for r, _ in all_rows]
+    assert rids == sorted(rids)
+    mid = rids[len(rids) // 2]
+    assert [r for r, _ in tl.scores_since(0, upto=mid)] == [r for r in rids if r <= mid]
+    assert [r for r, _ in tl.scores_since(mid, upto=mid)] == []
+    seqs = tl.sequences_since(0)
+    srid = seqs[9][0]
+    assert len(tl.sequences_since(0, upto=srid)) == 10
+    revs = tl.score_revisions()
+    assert [r for r, _ in revs] == rids and all(tl.has_revision(d) for _, d in revs)
