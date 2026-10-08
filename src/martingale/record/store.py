@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
 import shutil
 import sqlite3
@@ -18,9 +19,10 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, Sequence
 
 from martingale.record.bits import GENESIS_DIGEST, digest_json
+from martingale.record.replay import check_replay_origin
 from martingale.record.revision import LLMRevision
 from martingale.record.tokens import ScoreRecord, SequenceRecord
 
@@ -51,6 +53,18 @@ CREATE TABLE IF NOT EXISTS scores (
 
 
 _NO_LIMIT = 2**62   # SQLite rowids are signed 64-bit; "no upper bound" for the *_since readers
+_PROMPT_EXPR = "json_extract(record_json, '$.prompt_digest')"   # expression index: origin lookup for replayed rows
+
+
+def _ensure_prompt_index(con: sqlite3.Connection) -> bool:
+    """Index sequences by prompt digest (needs SQLite's JSON functions); False means fall back to a scan.
+    Created on the first origin lookup, not on open, so reading a record never rewrites its file."""
+    try:
+        con.execute(f"CREATE INDEX IF NOT EXISTS sequences_prompt_digest ON sequences({_PROMPT_EXPR})")
+        return True
+    except sqlite3.OperationalError as exc:
+        logging.getLogger("martingale").warning("prompt-digest index unavailable (%s); origin lookups will scan", exc)
+        return False
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
@@ -72,6 +86,7 @@ class TokenLedger:
         self._con = _connect(self._path)
         self._lock = threading.RLock()
         self._con.executescript(_SCHEMA)
+        self._prompt_index: bool | None = None      # unknown until the first origin lookup needs it
 
     @contextlib.contextmanager
     def _tx(self, immediate: bool = True):
@@ -125,12 +140,19 @@ class TokenLedger:
         return GENESIS_DIGEST if row is None else row[0]
 
     def append_sequence(self, seq: SequenceRecord) -> SequenceRecord:
-        """Fail closed: refuses an unknown revision, a gap in the per-actor index, or a broken chain.
+        """Fail closed: refuses an unknown revision, a gap in the per-actor index, a broken chain, and a
+        replayed row whose claimed origin is missing, not fresh, or differs from it token for token.
         The checks and the insert are one transaction."""
         with self._tx():
             for d in seq.revision_digests:
                 if not self.has_revision(d):
                     raise KeyError(f"sequence references unpublished revision {d}")
+            if seq.replay is not None and seq.replay.origin_digest is not None:
+                try:
+                    origin = self.get_sequence(seq.replay.origin_digest)
+                except KeyError:
+                    raise KeyError(f"replay origin sequence not in ledger: {seq.replay.origin_digest}") from None
+                check_replay_origin(seq, origin)
             expected_index = self.next_sequence_index(seq.actor_id)
             if seq.sequence_index != expected_index:
                 raise ValueError(f"actor {seq.actor_id}: expected sequence_index {expected_index}, got {seq.sequence_index}")
@@ -220,6 +242,37 @@ class TokenLedger:
             "SELECT record_json FROM scores WHERE sequence_digest=? ORDER BY rowid", (sequence_digest,)
         ).fetchall()
         return [ScoreRecord.from_dict(json.loads(r)) for (r,) in rows]
+
+    # ---- replayed rows ----------------------------------------------------------
+
+    def find_fresh_sequences(self, prompt_digest: str, token_ids: Sequence[int] | None = None) -> list[SequenceRecord]:
+        """Fresh (not replayed) sequences with this prompt digest and, when given, exactly these completion
+        token ids, in insertion order. This is how a replay buffer's row is tied back to the generation
+        that produced it (docs/replay-provenance.md)."""
+        if self._prompt_index is None:
+            with self._lock:
+                self._prompt_index = _ensure_prompt_index(self._con)
+        if self._prompt_index:
+            rows = self._con.execute(f"SELECT record_json FROM sequences WHERE {_PROMPT_EXPR} = ? ORDER BY rowid",
+                                     (prompt_digest,)).fetchall()
+        else:
+            rows = self._con.execute("SELECT record_json FROM sequences ORDER BY rowid").fetchall()
+        want = None if token_ids is None else [int(t) for t in token_ids]
+        out = []
+        for (r,) in rows:
+            seq = SequenceRecord.from_dict(json.loads(r))
+            if seq.prompt_digest != prompt_digest or seq.replay is not None:
+                continue
+            if want is None or [t.token_id for t in seq.tokens] == want:
+                out.append(seq)
+        return out
+
+    def count_replayed_sequences(self) -> int:
+        try:
+            return self._con.execute(
+                "SELECT COUNT(*) FROM sequences WHERE json_extract(record_json, '$.provenance') = 'replayed'").fetchone()[0]
+        except sqlite3.OperationalError:
+            return sum(1 for s in self.all_sequences() if s.replay is not None)
 
     # ---- head -----------------------------------------------------------------
 

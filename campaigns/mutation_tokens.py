@@ -2,9 +2,10 @@
 campaigns/mutation_tokens.py — forgery campaign against checker/verify_tokens.py.
 
 Builds a small two-actor token record (three revisions, mixed-revision
-sequences, top-k entries, trainer scores), exports it, then applies >= 60
-single-fault mutations to copies of the export and runs the independent
-checker on each. Two verdict columns:
+sequences, top-k entries, trainer scores, two replayed rows: a copy of a
+fresh row and an explicit row without an origin), exports it, then applies
+>= 60 single-fault mutations to copies of the export and runs the
+independent checker on each. Two verdict columns:
 
   rejected_anchored    checker given the true ledger head (the deployment mode:
                        TokenLedger.head() is published out of band, e.g. in the run log)
@@ -12,8 +13,12 @@ checker on each. Two verdict columns:
 
 The re-signed class (tamper, then recompute every downstream digest) is the
 reason anchors exist: without a trusted head a consistent chain is a
-consistent chain. The kill rule is 100% rejection in the anchored column;
-the unanchored column is reported, not asserted.
+consistent chain. One exception the campaign shows: a replayed copy binds
+its origin's digest, so re-signing anything inside the origin (tokens,
+reward, header; the last fresh row of actor 1 here) or deleting it is caught
+without an anchor; the origin's scores hang off its digest and are not
+witnessed. The kill rule is 100% rejection in the anchored column; the
+unanchored column is reported, not asserted.
 
     uv run python -m campaigns.mutation_tokens
 """
@@ -24,12 +29,14 @@ import json
 import shutil
 import sys
 import tempfile
+from fractions import Fraction
 from pathlib import Path
 from typing import Callable
 
 from checker.verify_tokens import verify_export
 from martingale.record import Recorder, SamplerConfig, float_bits
 from martingale.record.bits import digest_json
+from martingale.record.replay import REPLAY_KEYS
 
 RESULTS_DIR = Path(__file__).parent.parent / "results"
 W = ["1" * 64, "2" * 64, "3" * 64]
@@ -52,7 +59,18 @@ def build_fixture(ws: Path) -> tuple[Recorder, str]:
         seqs.append(s.record)
     for s in seqs:
         rec.score(s.digest, r1.digest, [-0.45, -1.6, -0.3])
+    # replayed rows (record/replay.py): a copy of actor 1's last fresh row, and an explicit row without an origin
+    copied = rec.replay_from(seqs[5].digest, actor_id=0, sequence_id="step1/replay0", draw_id="4/0",
+                             content_digest="c" * 64, is_weight=Fraction(1, 2), rescale=Fraction(3, 4), reward=1.0)
+    rec.score(copied.digest, r1.digest, [-0.45, -1.6, -0.3])
+    explicit = rec.replayed(actor_id=0, sequence_id="restored", prompt_ids=[4, 4, 4],
+                            steps=[(r0.digest, 40, -0.5), (r1.digest, 41, -1.5, [(41, -1.5), (7, -2.5)]), (r1.digest, 42, -0.25)],
+                            draw_id="4/1", content_digest="d" * 64, is_weight=1)
+    rec.score(explicit.digest, r1.digest, [-0.4, -1.4, -0.2])
     return rec, rec.ledger.head()
+
+
+COPY, EXPLICIT = 3, 4     # positions in _seq_files(): actor 0 holds seq 0..4 (3 = the copy, 4 = the explicit row)
 
 
 Mutation = Callable[[Path], None]
@@ -86,8 +104,12 @@ def _resign(d: dict) -> None:
         prev = t["digest"]
     d["token_digests"] = [t["digest"] for t in d["tokens"]]
     d["terminal_digest"] = prev
-    d["digest"] = digest_json({k: d[k] for k in ("actor_id", "sequence_index", "sequence_id", "prompt_digest", "prompt_len",
-                                                "token_digests", "reward_bits", "prev_sequence_digest", "terminal_digest")})
+    canon = {k: d[k] for k in ("actor_id", "sequence_index", "sequence_id", "prompt_digest", "prompt_len",
+                               "token_digests", "reward_bits", "prev_sequence_digest", "terminal_digest")}
+    if d.get("replay") is not None:                      # a replayed row digests its provenance and replay block
+        canon["provenance"] = "replayed"
+        canon["replay"] = {k: d["replay"][k] for k in REPLAY_KEYS}
+    d["digest"] = digest_json(canon)
     sprev = d["digest"]
     for s in d.get("scores", []):
         s["sequence_digest"] = d["digest"]
@@ -234,6 +256,85 @@ def mutations() -> dict[str, Mutation]:
     resigned("revision_same_sampler", lambda d: d["tokens"][0].__setitem__("revision_digest", d["tokens"][2]["revision_digest"]))
     resigned("drop_token", lambda d: (d["tokens"].pop(), [t.__setitem__("position", i) for i, t in enumerate(d["tokens"])]))
     resigned("score", lambda d: d["scores"][0].__setitem__("logprob_bits", float_bits(-9.0)))
+    # replayed rows: the replay block, its provenance flag, and the origin binding
+    def rep_field(name, key, val, resign=False, target=COPY):
+        def fn(exp):
+            def ed(d):
+                d["replay"][key] = val(d["replay"][key]) if callable(val) else val
+                if resign:
+                    _resign(d)
+            _edit(_seq_files(exp)[target], ed)
+        m[name] = fn
+    rep_field("replay_draw_id", "draw_id", "forged")
+    rep_field("replay_draw_id_empty", "draw_id", "")
+    rep_field("replay_content_digest_nibble", "content_digest", _flip_nibble)
+    rep_field("replay_is_weight_num+1", "is_weight_num", lambda v: v + 1)
+    rep_field("replay_is_weight_den+1", "is_weight_den", lambda v: v + 1)
+    rep_field("replay_rescale_num+1", "rescale_num", lambda v: v + 1)
+    rep_field("replay_origin_nibble", "origin_digest", _flip_nibble)
+    rep_field("replay_extra_key", "note", "x")
+    rep_field("replay_is_weight_bool", "is_weight_num", True)
+    rep_field("replay_is_weight_negative", "is_weight_num", -1)
+    rep_field("replay_is_weight_den_zero", "is_weight_den", 0)
+    rep_field("replay_rescale_zero", "rescale_num", 0)
+    def prov(name, fn, target=COPY):
+        m[name] = lambda exp: _edit(_seq_files(exp)[target], fn)
+    prov("replay_provenance_fresh_with_block", lambda d: d.__setitem__("provenance", "fresh"))
+    prov("replay_provenance_bogus", lambda d: d.__setitem__("provenance", "cached"))
+    prov("replay_provenance_missing", lambda d: d.pop("provenance"))
+    prov("replay_block_null_with_provenance", lambda d: d.__setitem__("replay", None))
+    prov("replay_block_string", lambda d: d.__setitem__("replay", "4/0"))
+    # re-signed: the block and the digests agree, so only the origin binding or the anchor can catch it
+    rep_field("resigned_replay_weight_unreduced", "is_weight_num", lambda v: v * 2, resign=True)       # 1/2 -> 2/2
+    rep_field("resigned_replay_origin_missing", "origin_digest", _flip_nibble, resign=True)
+    def resigned_origin_other_fresh(exp):
+        other = json.loads(_seq_files(exp)[0].read_text())["digest"]
+        _edit(_seq_files(exp)[COPY], lambda d: (d["replay"].__setitem__("origin_digest", other), _resign(d)))
+    def resigned_copy_token_tampered(exp):
+        """The copy no longer equals its origin: caught without an anchor."""
+        _edit(_seq_files(exp)[COPY], lambda d: (d["tokens"][1].__setitem__("logprob_bits", float_bits(-1.4)), _resign(d)))
+    def resigned_copy_prompt_tampered(exp):
+        def ed(d):
+            d["prompt_ids"] = None; d["prompt_digest"] = _flip_nibble(d["prompt_digest"]); _resign(d)
+        _edit(_seq_files(exp)[COPY], ed)
+    def resigned_copy_origin_dropped(exp):
+        """The copy keeps its tokens but no longer names its origin: a weaker claim; only the anchor catches it."""
+        def ed(d):
+            d["replay"]["origin_digest"] = None; _resign(d)
+        f3, f4 = _seq_files(exp)[COPY], _seq_files(exp)[EXPLICIT]
+        _edit(f3, ed)
+        new_prev = json.loads(f3.read_text())["digest"]
+        _edit(f4, lambda d: (d.__setitem__("prev_sequence_digest", new_prev), _resign(d)))   # keep actor 0's chain consistent
+    def resigned_replay_block_removed(exp):
+        """The explicit row pretends to be fresh: a consistent chain; the anchor catches it."""
+        _edit(_seq_files(exp)[EXPLICIT], lambda d: (d.pop("provenance"), d.pop("replay"), _resign(d)))
+    def resigned_explicit_row_given_origin(exp):
+        """The explicit row claims a fresh origin whose tokens differ: caught without an anchor."""
+        origin = json.loads(_seq_files(exp)[0].read_text())["digest"]
+        _edit(_seq_files(exp)[EXPLICIT], lambda d: (d["replay"].__setitem__("origin_digest", origin), _resign(d)))
+    def resigned_fresh_row_given_replay_block(exp):
+        """Actor 1's last fresh row (the copy's origin) claims to be a replay of another fresh row."""
+        origin = json.loads(_seq_files(exp)[1].read_text())["digest"]
+        block = {"draw_id": "x", "content_digest": "e" * 64, "is_weight_num": 1, "is_weight_den": 1,
+                 "rescale_num": 1, "rescale_den": 1, "origin_digest": origin}
+        _edit(_seq_files(exp)[-1], lambda d: (d.__setitem__("provenance", "replayed"), d.__setitem__("replay", block), _resign(d)))
+    def resigned_origin_token_tampered(exp):
+        """The origin (last fresh row of actor 1) is re-signed with a different token: its copy witnesses it."""
+        _edit(_seq_files(exp)[-1], lambda d: (d["tokens"][2].__setitem__("token_id", 777), _resign(d)))
+    def resigned_origin_reward_tampered(exp):
+        """The origin's reward is not witnessed by the copy: re-signed, only the anchor catches it."""
+        _edit(_seq_files(exp)[-1], lambda d: (d.__setitem__("reward_bits", float_bits(3.0)), _resign(d)))
+    seq_field("seq_fresh_provenance_explicit", None, None, "provenance", "fresh")   # fresh rows carry no such key
+    seq_field("seq_fresh_replay_null", None, None, "replay", None)
+    m.update(resigned_replay_origin_other_fresh=resigned_origin_other_fresh,
+             resigned_copy_token_tampered=resigned_copy_token_tampered,
+             resigned_copy_prompt_tampered=resigned_copy_prompt_tampered,
+             resigned_copy_origin_dropped=resigned_copy_origin_dropped,
+             resigned_replay_block_removed=resigned_replay_block_removed,
+             resigned_explicit_row_given_origin=resigned_explicit_row_given_origin,
+             resigned_fresh_row_given_replay_block=resigned_fresh_row_given_replay_block,
+             resigned_origin_token_tampered=resigned_origin_token_tampered,
+             resigned_origin_reward_tampered=resigned_origin_reward_tampered)
     return m
 
 

@@ -1,17 +1,14 @@
 {
  "campaign": "mutation_tokens",
- "n_mutants": 90,
- "rejected_anchored": 90,
- "rejected_unanchored": 82,
+ "n_mutants": 120,
+ "rejected_anchored": 120,
+ "rejected_unanchored": 115,
  "accepted_unanchored": [
-  "drop_last_sequence",
   "drop_unreferenced_manifest",
   "seq_scores_null",
-  "resigned_token_id",
-  "resigned_logprob",
-  "resigned_reward",
-  "resigned_revision_same_sampler",
-  "resigned_score"
+  "resigned_score",
+  "resigned_copy_origin_dropped",
+  "resigned_replay_block_removed"
  ],
  "all_rejected_anchored": true,
  "mutants": [
@@ -181,13 +178,13 @@
    "mutant": "seq_prompt_len_99",
    "rejected_anchored": true,
    "rejected_unanchored": true,
-   "first_error": "sequence digest mismatch"
+   "first_error": "prompt_ids malformed"
   },
   {
    "mutant": "seq_prompt_digest_fn",
    "rejected_anchored": true,
    "rejected_unanchored": true,
-   "first_error": "sequence digest mismatch"
+   "first_error": "prompt_ids do not hash to prompt_digest"
   },
   {
    "mutant": "seq_sequence_index_9",
@@ -264,8 +261,8 @@
   {
    "mutant": "drop_last_sequence",
    "rejected_anchored": true,
-   "rejected_unanchored": false,
-   "first_error": "ledger head 1c61cba7007e53bbbd935a00ef061b849237e9f23a16194f932e22cb8540773e != anchored 48cb3a6dc8e922317d3779503dca4b8ee4448ce76afb4eb0f5089810577b156a"
+   "rejected_unanchored": true,
+   "first_error": "replay origin becd6b475b6f not in the export (or did not verify)"
   },
   {
    "mutant": "swap_sequence_files",
@@ -409,7 +406,7 @@
    "mutant": "drop_unreferenced_manifest",
    "rejected_anchored": true,
    "rejected_unanchored": false,
-   "first_error": "ledger head 0d638bca6780adf4af87b2ada8cb704ce5bb814e9158d6edd7caa16f8bf89eff != anchored 48cb3a6dc8e922317d3779503dca4b8ee4448ce76afb4eb0f5089810577b156a"
+   "first_error": "ledger head ad0bcee41a9f080d114b010e0dc7c22645957a3228426ab4224be88f19984c3c != anchored e8f706c19968e781d027f7aa0753c68e87a29897b9b57d3632717cde6191d565"
   },
   {
    "mutant": "rename_manifest",
@@ -475,7 +472,7 @@
    "mutant": "seq_scores_null",
    "rejected_anchored": true,
    "rejected_unanchored": false,
-   "first_error": "ledger head 7efae281e8c7800b50718f2a25a30ca09a70eb09c6591ea95711231a6a12edaa != anchored 48cb3a6dc8e922317d3779503dca4b8ee4448ce76afb4eb0f5089810577b156a"
+   "first_error": "ledger head ef5ef600101b9d716de8e9f6211dad2eaddaa832fa24bdbbbeb2eb32baf8c1ee != anchored e8f706c19968e781d027f7aa0753c68e87a29897b9b57d3632717cde6191d565"
   },
   {
    "mutant": "seq_scores_string",
@@ -522,26 +519,26 @@
   {
    "mutant": "resigned_token_id",
    "rejected_anchored": true,
-   "rejected_unanchored": false,
-   "first_error": "ledger head 9e51baa7d67a268576a66ba09bfee16bb05ab57ed1f1977275a8fcc3f04642bf != anchored 48cb3a6dc8e922317d3779503dca4b8ee4448ce76afb4eb0f5089810577b156a"
+   "rejected_unanchored": true,
+   "first_error": "replay origin becd6b475b6f not in the export (or did not verify)"
   },
   {
    "mutant": "resigned_logprob",
    "rejected_anchored": true,
-   "rejected_unanchored": false,
-   "first_error": "ledger head 2b77e720b35a9a5ddd0977c73450a98236142dc96724e70c0ed7b0f2e3af65b2 != anchored 48cb3a6dc8e922317d3779503dca4b8ee4448ce76afb4eb0f5089810577b156a"
+   "rejected_unanchored": true,
+   "first_error": "replay origin becd6b475b6f not in the export (or did not verify)"
   },
   {
    "mutant": "resigned_reward",
    "rejected_anchored": true,
-   "rejected_unanchored": false,
-   "first_error": "ledger head 5552e359f21a15a877ea7caf4990abd49a285b234ad52b530f9d106fed3c7011 != anchored 48cb3a6dc8e922317d3779503dca4b8ee4448ce76afb4eb0f5089810577b156a"
+   "rejected_unanchored": true,
+   "first_error": "replay origin becd6b475b6f not in the export (or did not verify)"
   },
   {
    "mutant": "resigned_revision_same_sampler",
    "rejected_anchored": true,
-   "rejected_unanchored": false,
-   "first_error": "ledger head bc96621da7225a3800d5dd9e2e0faa29a4eb0b73500e3a8a010370df000cbbae != anchored 48cb3a6dc8e922317d3779503dca4b8ee4448ce76afb4eb0f5089810577b156a"
+   "rejected_unanchored": true,
+   "first_error": "replay origin becd6b475b6f not in the export (or did not verify)"
   },
   {
    "mutant": "resigned_drop_token",
@@ -553,7 +550,187 @@
    "mutant": "resigned_score",
    "rejected_anchored": true,
    "rejected_unanchored": false,
-   "first_error": "ledger head a72b10ba3d00ff309594f06fc617950a56f5c0aeedfc94d0ea8263972f8d2d58 != anchored 48cb3a6dc8e922317d3779503dca4b8ee4448ce76afb4eb0f5089810577b156a"
+   "first_error": "ledger head 58f764878ef749b76512ec2d58d0bbff89856aaba9bfe1298fb31bdd2291860b != anchored e8f706c19968e781d027f7aa0753c68e87a29897b9b57d3632717cde6191d565"
+  },
+  {
+   "mutant": "replay_draw_id",
+   "rejected_anchored": true,
+   "rejected_unanchored": true,
+   "first_error": "sequence digest mismatch"
+  },
+  {
+   "mutant": "replay_draw_id_empty",
+   "rejected_anchored": true,
+   "rejected_unanchored": true,
+   "first_error": "replay draw_id malformed"
+  },
+  {
+   "mutant": "replay_content_digest_nibble",
+   "rejected_anchored": true,
+   "rejected_unanchored": true,
+   "first_error": "sequence digest mismatch"
+  },
+  {
+   "mutant": "replay_is_weight_num+1",
+   "rejected_anchored": true,
+   "rejected_unanchored": true,
+   "first_error": "replay is_weight is not a reduced fraction"
+  },
+  {
+   "mutant": "replay_is_weight_den+1",
+   "rejected_anchored": true,
+   "rejected_unanchored": true,
+   "first_error": "sequence digest mismatch"
+  },
+  {
+   "mutant": "replay_rescale_num+1",
+   "rejected_anchored": true,
+   "rejected_unanchored": true,
+   "first_error": "replay rescale is not a reduced fraction"
+  },
+  {
+   "mutant": "replay_origin_nibble",
+   "rejected_anchored": true,
+   "rejected_unanchored": true,
+   "first_error": "sequence digest mismatch"
+  },
+  {
+   "mutant": "replay_extra_key",
+   "rejected_anchored": true,
+   "rejected_unanchored": true,
+   "first_error": "replay block has unbound keys ['note']"
+  },
+  {
+   "mutant": "replay_is_weight_bool",
+   "rejected_anchored": true,
+   "rejected_unanchored": true,
+   "first_error": "replay is_weight malformed"
+  },
+  {
+   "mutant": "replay_is_weight_negative",
+   "rejected_anchored": true,
+   "rejected_unanchored": true,
+   "first_error": "replay is_weight malformed"
+  },
+  {
+   "mutant": "replay_is_weight_den_zero",
+   "rejected_anchored": true,
+   "rejected_unanchored": true,
+   "first_error": "replay is_weight malformed"
+  },
+  {
+   "mutant": "replay_rescale_zero",
+   "rejected_anchored": true,
+   "rejected_unanchored": true,
+   "first_error": "replay rescale malformed"
+  },
+  {
+   "mutant": "replay_provenance_fresh_with_block",
+   "rejected_anchored": true,
+   "rejected_unanchored": true,
+   "first_error": "provenance 'fresh' is not 'replayed' (fresh rows carry no provenance key)"
+  },
+  {
+   "mutant": "replay_provenance_bogus",
+   "rejected_anchored": true,
+   "rejected_unanchored": true,
+   "first_error": "provenance 'cached' is not 'replayed' (fresh rows carry no provenance key)"
+  },
+  {
+   "mutant": "replay_provenance_missing",
+   "rejected_anchored": true,
+   "rejected_unanchored": true,
+   "first_error": "fresh row carries provenance or replay keys"
+  },
+  {
+   "mutant": "replay_block_null_with_provenance",
+   "rejected_anchored": true,
+   "rejected_unanchored": true,
+   "first_error": "provenance and replay block disagree"
+  },
+  {
+   "mutant": "replay_block_string",
+   "rejected_anchored": true,
+   "rejected_unanchored": true,
+   "first_error": "replay block is not an object"
+  },
+  {
+   "mutant": "resigned_replay_weight_unreduced",
+   "rejected_anchored": true,
+   "rejected_unanchored": true,
+   "first_error": "replay is_weight is not a reduced fraction"
+  },
+  {
+   "mutant": "resigned_replay_origin_missing",
+   "rejected_anchored": true,
+   "rejected_unanchored": true,
+   "first_error": "prev_sequence_digest does not match the previous sequence"
+  },
+  {
+   "mutant": "seq_fresh_provenance_explicit",
+   "rejected_anchored": true,
+   "rejected_unanchored": true,
+   "first_error": "provenance 'fresh' is not 'replayed' (fresh rows carry no provenance key)"
+  },
+  {
+   "mutant": "seq_fresh_replay_null",
+   "rejected_anchored": true,
+   "rejected_unanchored": true,
+   "first_error": "fresh row carries provenance or replay keys"
+  },
+  {
+   "mutant": "resigned_replay_origin_other_fresh",
+   "rejected_anchored": true,
+   "rejected_unanchored": true,
+   "first_error": "prev_sequence_digest does not match the previous sequence"
+  },
+  {
+   "mutant": "resigned_copy_token_tampered",
+   "rejected_anchored": true,
+   "rejected_unanchored": true,
+   "first_error": "prev_sequence_digest does not match the previous sequence"
+  },
+  {
+   "mutant": "resigned_copy_prompt_tampered",
+   "rejected_anchored": true,
+   "rejected_unanchored": true,
+   "first_error": "prev_sequence_digest does not match the previous sequence"
+  },
+  {
+   "mutant": "resigned_copy_origin_dropped",
+   "rejected_anchored": true,
+   "rejected_unanchored": false,
+   "first_error": "ledger head cb093cb787a716d4086506a9b7b2e033ca48109585e5f439893fd3a2a3368ddd != anchored e8f706c19968e781d027f7aa0753c68e87a29897b9b57d3632717cde6191d565"
+  },
+  {
+   "mutant": "resigned_replay_block_removed",
+   "rejected_anchored": true,
+   "rejected_unanchored": false,
+   "first_error": "ledger head fbb59eacc038a4e9591ae01fed8fb443734d3e9f9e8b7b72310599b51f61164b != anchored e8f706c19968e781d027f7aa0753c68e87a29897b9b57d3632717cde6191d565"
+  },
+  {
+   "mutant": "resigned_explicit_row_given_origin",
+   "rejected_anchored": true,
+   "rejected_unanchored": true,
+   "first_error": "replayed row differs from its origin: prompt"
+  },
+  {
+   "mutant": "resigned_fresh_row_given_replay_block",
+   "rejected_anchored": true,
+   "rejected_unanchored": true,
+   "first_error": "replay origin becd6b475b6f not in the export (or did not verify)"
+  },
+  {
+   "mutant": "resigned_origin_token_tampered",
+   "rejected_anchored": true,
+   "rejected_unanchored": true,
+   "first_error": "replay origin becd6b475b6f not in the export (or did not verify)"
+  },
+  {
+   "mutant": "resigned_origin_reward_tampered",
+   "rejected_anchored": true,
+   "rejected_unanchored": true,
+   "first_error": "replay origin becd6b475b6f not in the export (or did not verify)"
   }
  ]
 }

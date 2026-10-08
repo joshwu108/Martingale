@@ -113,10 +113,22 @@ class StepDiagnosis:
     span_fraction: float                     # fraction of new sequences spanning > 2 revisions
     n_negative_lag: int
     unscored_new_sequences: int
+    by_provenance: dict[str, list[dict]] = field(default_factory=dict)             # this step only, per provenance
+    cumulative_by_provenance: dict[str, list[dict]] = field(default_factory=dict)
 
     def metrics(self, prefix: str = "martingale/") -> dict[str, float]:
         """Flat float metrics for a trainer log (W&B, TensorBoard). Informational floats."""
         out: dict[str, float] = {}
+        replayed = self.by_provenance.get("replayed")
+        if replayed:
+            total = sum(b["n_tokens"] for b in self.by_lag) or 1
+            n_rep = sum(b["n_tokens"] for b in replayed)
+            out[prefix + "replayed_tokens"] = float(n_rep)
+            out[prefix + "replayed_share"] = n_rep / total
+            for b in replayed:
+                f = b["float_informational"]
+                out[prefix + f"replayed_ess_fraction_lag{b['lag']}"] = f["ess_fraction"]
+                out[prefix + f"replayed_mean_abs_log_ratio_lag{b['lag']}"] = f["mean_abs_log_ratio"]
         a = self.attribution["float_informational"]
         if a["staleness_share"] is not None:
             out[prefix + "staleness_share"] = a["staleness_share"]
@@ -143,6 +155,7 @@ class IncrementalDiagnosis:
         self._score_rowid = 0
         self._seq_rowid = 0
         self._cumulative: dict[int, RunningBucket] = {}
+        self._cumulative_prov: dict[tuple[str, int], RunningBucket] = {}
         self._seq_cache: dict[str, SequenceRecord] = {}
         self._step_cache: dict[str, int] = {}
         self._weights_cache: dict[str, str] = {}
@@ -177,6 +190,7 @@ class IncrementalDiagnosis:
             if len(seq.revision_digests) > 2:
                 spanning += 1
         step_buckets: dict[int, RunningBucket] = {}
+        step_prov: dict[tuple[str, int], RunningBucket] = {}
         n_new = 0
         n_negative = 0
         for rid, sc in self._ledger.scores_since(self._score_rowid):
@@ -195,6 +209,9 @@ class IncrementalDiagnosis:
             for table in (step_buckets, self._cumulative):
                 table.setdefault(lag, RunningBucket(lag, size=self._size)).add(
                     seq.digest, sc.position, lr, seq.is_mixed_revision, self._eps, behavior_logprob=b_lp)
+            for ptable in (step_prov, self._cumulative_prov):
+                ptable.setdefault((seq.provenance, lag), RunningBucket(lag, size=self._size)).add(
+                    seq.digest, sc.position, lr, seq.is_mixed_revision, self._eps, behavior_logprob=b_lp)
         by_lag = [step_buckets[k].summary(self._eps) for k in sorted(step_buckets)]
         floor = Fraction(step_buckets[0].summary(self._eps)["mean_abs_log_ratio"]) if 0 in step_buckets else None
         partial: dict = {"by_lag": by_lag, "lag0_floor": step_buckets[0].summary(self._eps) if 0 in step_buckets else None}
@@ -204,7 +221,14 @@ class IncrementalDiagnosis:
             attribution=attribute(partial), floor_mean_abs=floor, new_weights_digests=weights,
             span_fraction=(spanning / len(new_seqs)) if new_seqs else 0.0, n_negative_lag=n_negative,
             unscored_new_sequences=len(self._unscored),
+            by_provenance=self._by_provenance(step_prov), cumulative_by_provenance=self._by_provenance(self._cumulative_prov),
         )
+
+    def _by_provenance(self, table: dict[tuple[str, int], RunningBucket]) -> dict[str, list[dict]]:
+        out: dict[str, list[dict]] = {}
+        for prov, lag in sorted(table):
+            out.setdefault(prov, []).append(table[(prov, lag)].summary(self._eps))
+        return out
 
     def cumulative_summary(self) -> list[dict]:
         return [self._cumulative[k].summary(self._eps) for k in sorted(self._cumulative)]

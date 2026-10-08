@@ -40,3 +40,6 @@ plan.md
 
 # Private planning docs (same convention as Reservoir)
 planning/
+
+# TLC model-checker scratch output (spec/check.sh)
+spec/states/
