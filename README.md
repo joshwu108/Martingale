@@ -13,8 +13,8 @@ trainer later thought.
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 
 > **Status (2026-10-06).** Record, live diagnosis with alarms, TRL `GRPOTrainer`
-> integration and an exact estimator bench are implemented and tested (`make check`:
-> ruff, mypy, 421 tests). Four real TRL + vLLM runs on Modal completed and verified;
+> integration and an exact estimator bench are implemented and tested with
+> `make check`. Four real TRL + vLLM runs on Modal completed and verified;
 > their numbers are below. Claims map to artifacts in
 > [`paper/claim_evidence.md`](paper/claim_evidence.md); limits in
 > [`docs/nonclaims.md`](docs/nonclaims.md).
@@ -74,11 +74,14 @@ forward at a precision the engine's weights cannot represent do. Full artifacts 
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
-uv sync
-uv run martingale demo
+uv tool install martingale
+martingale demo
 ```
 
 The demo records a synthetic run and prints the same kind of diagnosis for it.
+For a source checkout, use `uv sync` and `uv run martingale demo` instead.
+The TRL adapter needs `pip install "martingale[trl]"`; the inspector needs
+`pip install "martingale[server]"`.
 
 ## The problem
 
@@ -222,8 +225,7 @@ paper/             claim_evidence.md
 benchmarks/modal/  trl_grpo_vllm.py: the real runs on Modal; sync_probe.py: elementwise weight-sync check
 ```
 
-`martingale serve` is the old Observatory dashboard over the exact ledger; it
-will be rebuilt as the rollout inspector over the token record.
+`martingale serve` opens the rollout inspector over the token record.
 
 ## Contributing
 

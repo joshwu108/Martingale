@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "martingale"
 version = "0.2.0"
-description = "Exact off-policy staleness accounting for asynchronous policy-gradient RL"
+description = "Per-token diagnostics for rollout staleness and trainer-engine mismatch in RL"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
@@ -21,7 +21,7 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
-dependencies = []
+dependencies = ["click>=8.0"]
 
 [project.optional-dependencies]
 campaigns = [
@@ -39,6 +39,9 @@ server = [
     "torch>=2.0",
     "prometheus-client>=0.20",
     "click>=8.0",
+]
+trl = [
+    "trl==1.13.0",
 ]
 
 [project.scripts]
