@@ -16,7 +16,7 @@
   This file defines the WEAKENED spec with this counterexample.
 *)
 
-EXTENDS Naturals, Sequences, FiniteSets, TLC
+EXTENDS Integers, Sequences, FiniteSets, TLC
 
 CONSTANTS
   Actors, Revisions, Actions
@@ -102,5 +102,9 @@ WeakenedSpec == Init /\ [][Next]_vars
 \* PinInvariant is VIOLATED under WeakenedSpec (counterexample exists)
 \* Counterexample: Learner publishes rev 0, Actor pins rev 0, Learner publishes rev 1,
 \* Actor draws using current_rev=1 (not pin=0), Actor appends: revision=0 ≠ pin_at_draw=1.
+
+\* State constraint for TLC: the ledger grows without bound (actors cycle back to IDLE),
+\* so the check explores every interleaving up to four appended records.
+LedgerBounded == Len(ledger) <= 4
 
 ================================================================================
