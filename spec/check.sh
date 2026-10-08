@@ -18,17 +18,18 @@ fi
 cd "$(dirname "$0")"
 
 echo "=== Checking RevisionPin (correct spec) ==="
-java -jar "$TLC_JAR" -config RevisionPin.cfg RevisionPin.tla 2>&1
+java -jar "$TLC_JAR" -deadlock -config RevisionPin.cfg RevisionPin.tla 2>&1
 CORRECT_EXIT=$?
 
 echo ""
 echo "=== Checking RevisionPinWeakened (should violate invariant) ==="
-java -jar "$TLC_JAR" -config RevisionPinWeakened.cfg RevisionPinWeakened.tla 2>&1
+java -jar "$TLC_JAR" -deadlock -config RevisionPinWeakened.cfg RevisionPinWeakened.tla 2>&1
 WEAKENED_EXIT=$?
 
 # For the correct spec: expect exit 0 (no violations)
-# For the weakened spec: expect non-zero (violation found)
-if [ $CORRECT_EXIT -eq 0 ] && [ $WEAKENED_EXIT -ne 0 ]; then
+# For the weakened spec: TLC exit 12 means an invariant violation.
+# Other nonzero exits (including parser errors) must fail this check.
+if [ $CORRECT_EXIT -eq 0 ] && [ $WEAKENED_EXIT -eq 12 ]; then
     echo ""
     echo "PASS: Correct spec holds, weakened spec shows violation (as expected)"
     exit 0
