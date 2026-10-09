@@ -12,9 +12,10 @@ trainer later thought.
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 
-> **Status (2026-10-06).** Record, live diagnosis with alarms, TRL `GRPOTrainer`
-> integration and an exact estimator bench are implemented and tested (`make check`:
-> ruff, mypy, 421 tests). Four real TRL + vLLM runs on Modal completed and verified;
+> **Status (2026-10-07).** Record, live diagnosis with alarms, TRL `GRPOTrainer`
+> integration, a verl 0.9.1 hook pair and an exact estimator bench are implemented
+> and tested (`make check`: ruff, mypy, full test suite). Four real TRL + vLLM runs on
+> Modal completed and verified;
 > their numbers are below. Claims map to artifacts in
 > [`paper/claim_evidence.md`](paper/claim_evidence.md); limits in
 > [`docs/nonclaims.md`](docs/nonclaims.md).
@@ -74,11 +75,14 @@ forward at a precision the engine's weights cannot represent do. Full artifacts 
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
-uv sync
-uv run martingale demo
+uv tool install martingale
+martingale demo
 ```
 
 The demo records a synthetic run and prints the same kind of diagnosis for it.
+For a source checkout, use `uv sync` and `uv run martingale demo` instead.
+The TRL adapter needs `pip install "martingale[trl]"`; the inspector needs
+`pip install "martingale[server]"`.
 
 ## The problem
 
@@ -90,7 +94,31 @@ trainer, or a weight sync silently failed. The last year of papers (TIS/MIS, the
 FP16 fix, VeXact, CISPO, GSPO, IcePop, A-3PO, staleness scaling laws, Missing Old
 Logits) is about exactly this, and the tooling is still scripts.
 
-## Use it with TRL
+## Use it with TRL or verl
+
+Install the framework separately: `uv pip install 'trl==1.13.0'` or
+`uv pip install 'verl==0.9.1'` (verl may require CUDA wheels). For verl, call the
+two hooks where its driver receives a generated `DataProto` and where the actor
+loss receives live log-probs:
+
+```python
+from martingale.integrations.verl import MartingaleMonitor, MartingaleVerlRecorder, wrap_ppo_loss
+
+flight = MartingaleVerlRecorder("./martingale_ws", tokenizer=tokenizer)
+flight.on_rollout(generated_batch, step=optimizer_step, weights=full_actor_state)
+worker.set_loss_fn(wrap_ppo_loss(worker.loss_fn, flight,
+                                 step=lambda: optimizer_step,
+                                 weights=lambda: full_actor_state))
+monitor = MartingaleMonitor(flight)
+monitor.on_step_end(optimizer_step, metrics.update)
+```
+
+`full_actor_state` must be the full, unsharded weights at each optimizer version;
+the actor hook needs the same row IDs and a shared recorder workspace accessible
+to its process. See [the verl integration notes](docs/verl-integration-notes.md) for wiring
+and current limits.
+
+### TRL
 
 ```python
 from trl import GRPOConfig
@@ -142,8 +170,8 @@ behavior log-prob bits (vLLM's sampling log-probs when present, else TRL's
 old log-probs, else a no-grad pass; which one is bound into the revision), a
 digest of the generating weights plus tokenizer and sampler config, and TRL's
 advantage. At update time it records the trainer's log-prob per token under the
-weights it trained with. Tested against TRL 1.13.0; `integrations/verl.py` and
-`integrations/lightning.py` publish revisions only, a verl adapter is next.
+weights it trained with. Tested against TRL 1.13.0; the verl 0.9.1 hook pair is
+fake-trainer tested. `integrations/lightning.py` publishes revisions only.
 
 ## Test your own correction (exact, no floats)
 
@@ -233,8 +261,7 @@ paper/             claim_evidence.md
 benchmarks/modal/  trl_grpo_vllm.py: the real runs on Modal; sync_probe.py: elementwise weight-sync check
 ```
 
-`martingale serve` is the old Observatory dashboard over the exact ledger; it
-will be rebuilt as the rollout inspector over the token record.
+`martingale serve` opens the rollout inspector over the token record.
 
 ## Contributing
 

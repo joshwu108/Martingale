@@ -3,10 +3,16 @@
 ## Setup
 
 ```bash
-uv sync                  # core, no dependencies
+uv sync                  # core CLI and its small Click dependency
 uv sync --extra prod     # optional: torch, prometheus, CLI
 make check               # checker import isolation + full test suite
 ```
+
+The `pinned-frameworks` CI job installs `trl==1.13.0` and `verl==0.9.1` and
+runs the adapter suites plus their real-class import smoke tests. It is
+best-effort (`continue-on-error`) because verl's vLLM/CUDA dependency chain may
+not resolve on the CPU GitHub runner. The ordinary matrix does not install
+either framework and remains the required gate.
 
 ## Rules
 
