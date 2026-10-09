@@ -74,6 +74,14 @@ image = (
 )
 app = modal.App("martingale-verl-grpo-vllm")
 hf_cache = modal.Volume.from_name("martingale-hf-cache", create_if_missing=True)
+# The container writes the result files here too, so a `modal run --detach` run keeps them with no client
+# attached: modal volume get martingale-results <run name> benchmarks/modal/results/
+results_vol = modal.Volume.from_name("martingale-results", create_if_missing=True)
+
+
+def run_name(max_steps: int, seed: int, temperature: float, tag: str) -> str:
+    suffix = (f"_t{temperature}" if temperature != 1.0 else "") + (f"_{tag}" if tag else "")
+    return f"verl_grpo_vllm_{GPU.lower()}_{max_steps}steps_seed{seed}{suffix}"
 
 
 def make_task_runner():
@@ -204,8 +212,9 @@ def make_task_runner():
     return MartingaleTaskRunner
 
 
-@app.function(image=image, gpu=GPU, timeout=60 * 60, cpu=4, memory=32768, volumes={"/hf_cache": hf_cache})
-def run_grpo(max_steps: int = 16, seed: int = 0, temperature: float = 1.0, lr: float = 1e-6) -> dict:
+@app.function(image=image, gpu=GPU, timeout=60 * 60, cpu=4, memory=32768, volumes={"/hf_cache": hf_cache, "/results": results_vol})
+def run_grpo(max_steps: int = 16, seed: int = 0, temperature: float = 1.0, lr: float = 1e-6,
+             tag: str = "") -> dict:
     import ray
     import torch
     import verl
@@ -242,6 +251,9 @@ def run_grpo(max_steps: int = 16, seed: int = 0, temperature: float = 1.0, lr: f
         "actor_precision": "fp32 master, fp16 mixed precision", "rollout_dtype": "float16",
         "calculate_log_probs": True, "wall_clock_seconds": res.pop("wall_clock_seconds"),
     }
+    from verl_hooks import write_results
+    print("results in volume martingale-results:", write_results(res, Path("/results") / run_name(max_steps, seed, temperature, tag)))
+    results_vol.commit()
     return res
 
 
@@ -250,9 +262,8 @@ def main(max_steps: int = 16, seed: int = 0, temperature: float = 1.0, lr: float
     sys.path.insert(0, str(_here.parent))
     from verl_hooks import write_results
 
-    res = run_grpo.remote(max_steps=max_steps, seed=seed, temperature=temperature, lr=lr)
-    suffix = (f"_t{temperature}" if temperature != 1.0 else "") + (f"_{tag}" if tag else "")
-    out = write_results(res, RESULTS_DIR / f"verl_grpo_vllm_{GPU.lower()}_{max_steps}steps_seed{seed}{suffix}")
+    res = run_grpo.remote(max_steps=max_steps, seed=seed, temperature=temperature, lr=lr, tag=tag)
+    out = write_results(res, RESULTS_DIR / run_name(max_steps, seed, temperature, tag))
     print(res["report_md"])
     print(json.dumps({k: v["ok"] for k, v in res["checks"].items() if isinstance(v, dict) and "ok" in v}, indent=1))
     if res["checks"]["fit_error"]:

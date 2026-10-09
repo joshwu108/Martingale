@@ -14,8 +14,8 @@ trainer later thought.
 
 > **Status (2026-10-07).** Record, live diagnosis with alarms, TRL `GRPOTrainer`
 > integration, a verl 0.9.1 hook pair and an exact estimator bench are implemented
-> and tested (`make check`: ruff, mypy, full test suite). Four real TRL + vLLM runs on
-> Modal completed and verified;
+> and tested (`make check`: ruff, mypy, full test suite). Four real TRL + vLLM runs and
+> one real verl + vLLM run (8 steps, 1x T4) on Modal completed and verified;
 > their numbers are below. Claims map to artifacts in
 > [`paper/claim_evidence.md`](paper/claim_evidence.md); limits in
 > [`docs/nonclaims.md`](docs/nonclaims.md).
@@ -99,21 +99,26 @@ two hooks where its driver receives a generated `DataProto` and where the actor
 loss receives live log-probs:
 
 ```python
+from functools import partial
+
 from martingale.integrations.verl import MartingaleMonitor, MartingaleVerlRecorder, wrap_ppo_loss
 
 flight = MartingaleVerlRecorder("./martingale_ws", tokenizer=tokenizer)
 flight.on_rollout(generated_batch, step=optimizer_step, weights=full_actor_state)
-worker.set_loss_fn(wrap_ppo_loss(worker.loss_fn, flight,
-                                 step=lambda: optimizer_step,
-                                 weights=lambda: full_actor_state))
+base = actor.loss_fn         # actor = ActorRolloutRefWorker.actor; partial(ppo_loss, config=...)
+actor.loss_fn = partial(wrap_ppo_loss(base.func, flight,
+                                      step=lambda: optimizer_step,
+                                      weights=lambda: full_actor_state), **base.keywords)
 monitor = MartingaleMonitor(flight)
 monitor.on_step_end(optimizer_step, metrics.update)
 ```
 
 `full_actor_state` must be the full, unsharded weights at each optimizer version;
 the actor hook needs the same row IDs and a shared recorder workspace accessible
-to its process. See [the verl integration notes](docs/verl-integration-notes.md) for wiring
-and current limits.
+to its process. Gather the weights after `optimizer_step`, not inside the loss (FSDP2).
+`benchmarks/modal/verl_grpo_vllm.py` is the complete wiring for `RayPPOTrainer`; see
+[the verl integration notes](docs/verl-integration-notes.md) for what its first run
+confirmed and the current limits.
 
 ### TRL
 
@@ -159,8 +164,9 @@ behavior log-prob bits (vLLM's sampling log-probs when present, else TRL's
 old log-probs, else a no-grad pass; which one is bound into the revision), a
 digest of the generating weights plus tokenizer and sampler config, and TRL's
 advantage. At update time it records the trainer's log-prob per token under the
-weights it trained with. Tested against TRL 1.13.0; the verl 0.9.1 hook pair is
-fake-trainer tested. `integrations/lightning.py` publishes revisions only.
+weights it trained with. Tested against TRL 1.13.0; the verl 0.9.1 hook pair ran
+once on a real verl 0.9.1 GRPO job (8 steps, one T4, single-turn, one actor rank)
+and passed every adapter check there. `integrations/lightning.py` publishes revisions only.
 
 ## Test your own correction (exact, no floats)
 
