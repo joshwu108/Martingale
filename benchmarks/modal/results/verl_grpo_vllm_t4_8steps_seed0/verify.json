@@ -1,0 +1,12 @@
+{
+ "ok": true,
+ "anchored": true,
+ "n_revisions": 39,
+ "n_sequences": 512,
+ "n_tokens": 1808,
+ "head": "681962ddc1e71f87d134213180a389f7b80d1facf99248488a804b494893c4bf",
+ "heads": {
+  "0": "7a952927d5ea1fa598ad8bc5e0f0acc575ffa090c95602db408ff1b1a5886781"
+ },
+ "errors": {}
+}
