@@ -243,6 +243,19 @@ class FlightView:
         return out
 
 
+class WorkerRPC:
+    """The worker subclass's RPCs on a one-rank worker group (ONE_TO_ALL returns one result per rank)."""
+
+    def __init__(self, wg: Any) -> None:
+        self.wg = wg
+
+    def snapshot(self) -> tuple[int, dict[str, Any]]:
+        return self.wg.martingale_snapshot()[0]
+
+    def status(self) -> dict:
+        return self.wg.martingale_status()[0]
+
+
 class DriverHooks:
     """Instance-patches a RayPPOTrainer after init_workers.
 

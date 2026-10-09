@@ -60,7 +60,7 @@ REPO_ROOT = _here.parents[2] if len(_here.parents) > 2 else Path("/root")
 # torch from the cu130 index first (Modal's T4 hosts run a CUDA 13 driver; the vLLM 0.24.0
 # wheel is a cu130 build), then verl with its vllm extra, which pins vllm, torch, transformers
 # and brings Ray. Ray actors do not inherit the driver's sys.path, so the sources go on PYTHONPATH,
-# with /root, where Modal puts this file (the TaskRunner unpickles its helpers by reference).
+# with /root, where Modal puts this file.
 image = (
     modal.Image.debian_slim(python_version="3.12")
     .apt_install("git")
@@ -76,51 +76,38 @@ app = modal.App("martingale-verl-grpo-vllm")
 hf_cache = modal.Volume.from_name("martingale-hf-cache", create_if_missing=True)
 
 
-def build_worker_class():
-    """verl's ActorRolloutRefWorker plus four driver-callable RPCs that own the worker-side hooks."""
-    from verl.single_controller.base.decorator import Dispatch, register
-    from verl.workers.engine_workers import ActorRolloutRefWorker
-
-    class MartingaleActorRolloutRefWorker(ActorRolloutRefWorker):
-        @register(dispatch_mode=Dispatch.ONE_TO_ALL)
-        def martingale_install(self, workspace: str, tokenizer_digest: str, sampler_overrides: dict):
-            from verl_hooks import WorkerHooks
-            self._martingale = WorkerHooks.install(self.actor, workspace=workspace, tokenizer_digest=tokenizer_digest,
-                                                   sampler_overrides=sampler_overrides)
-
-        @register(dispatch_mode=Dispatch.ONE_TO_ALL)
-        def martingale_snapshot(self):
-            return self._martingale.snapshot()
-
-        @register(dispatch_mode=Dispatch.ONE_TO_ALL)
-        def martingale_status(self):
-            return self._martingale.status()
-
-        @register(dispatch_mode=Dispatch.ONE_TO_ALL)
-        def martingale_close(self):
-            self._martingale.close()
-
-    return MartingaleActorRolloutRefWorker
-
-
-class _WorkerRPC:
-    """DriverHooks' view of the one-rank worker group (ONE_TO_ALL returns one result per rank)."""
-
-    def __init__(self, wg) -> None:
-        self.wg = wg
-
-    def snapshot(self):
-        return self.wg.martingale_snapshot()[0]
-
-    def status(self):
-        return self.wg.martingale_status()[0]
-
-
 def make_task_runner():
     """The Ray actor that builds verl's RayPPOTrainer as ``verl.trainer.main_ppo_v0.TaskRunner.run``
-    does (verl 0.9.1), with the actor worker swapped for the subclass above and the hooks attached."""
+    does (verl 0.9.1), with the actor worker swapped for a subclass and the hooks attached. Everything
+    the actor pickles is local here or in verl_hooks, so no Ray process has to import this Modal file."""
     import ray
     from verl.trainer.main_ppo_v0 import BaseTaskRunner
+
+    def build_worker_class():
+        """verl's ActorRolloutRefWorker plus four driver-callable RPCs that own the worker-side hooks."""
+        from verl.single_controller.base.decorator import Dispatch, register
+        from verl.workers.engine_workers import ActorRolloutRefWorker
+
+        class MartingaleActorRolloutRefWorker(ActorRolloutRefWorker):
+            @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+            def martingale_install(self, workspace: str, tokenizer_digest: str, sampler_overrides: dict):
+                from verl_hooks import WorkerHooks
+                self._martingale = WorkerHooks.install(self.actor, workspace=workspace, tokenizer_digest=tokenizer_digest,
+                                                       sampler_overrides=sampler_overrides)
+
+            @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+            def martingale_snapshot(self):
+                return self._martingale.snapshot()
+
+            @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+            def martingale_status(self):
+                return self._martingale.status()
+
+            @register(dispatch_mode=Dispatch.ONE_TO_ALL)
+            def martingale_close(self):
+                self._martingale.close()
+
+        return MartingaleActorRolloutRefWorker
 
     @ray.remote
     class MartingaleTaskRunner(BaseTaskRunner):
@@ -132,7 +119,7 @@ def make_task_runner():
             from verl.utils.dataset.rl_dataset import collate_fn
             from verl.utils.tracking import Tracking
             from verl.workers.config import HFModelConfig
-            from verl_hooks import DriverHooks, FlightView, adapter_checks, capture_logs, worst_tokens
+            from verl_hooks import DriverHooks, FlightView, WorkerRPC, adapter_checks, capture_logs, worst_tokens
 
             from checker.verify_tokens import verify_export
             from martingale.diagnostics import AlarmConfig, decompose, render_markdown
@@ -173,7 +160,7 @@ def make_task_runner():
             trainer.actor_rollout_wg.martingale_install(workspace, tok_digest, overrides)
             view = FlightView(flight)
             monitor = MartingaleMonitor(view, AlarmConfig(), halt_on_error=False)  # record alarms, keep the data
-            hooks = DriverHooks(flight, monitor, view, _WorkerRPC(trainer.actor_rollout_wg))
+            hooks = DriverHooks(flight, monitor, view, WorkerRPC(trainer.actor_rollout_wg))
             hooks.install(trainer)
             log_history = capture_logs(Tracking)
             started, fit_error = time.time(), None
@@ -184,8 +171,12 @@ def make_task_runner():
                 print(fit_error, flush=True)
             wall_clock = time.time() - started
 
-            status = trainer.actor_rollout_wg.martingale_status()[0]
-            trainer.actor_rollout_wg.martingale_close()          # worker's connection checkpoints and closes
+            try:
+                status = trainer.actor_rollout_wg.martingale_status()[0]
+                trainer.actor_rollout_wg.martingale_close()      # worker's connection checkpoints and closes
+            except Exception:       # the actor died with fit(): keep the driver's half of the record
+                status = {"applied_steps": 0, "skipped_steps": 0, "loss": {}, "stats": {},
+                          **hooks.last_status, "worker_lost": True}
             view.worker_stats = status["stats"]
             stats = {"driver": dict(flight.stats), "worker": status["stats"], "applied_steps": status["applied_steps"],
                      "skipped_steps": status["skipped_steps"], "loss_calls": status["loss"]}
