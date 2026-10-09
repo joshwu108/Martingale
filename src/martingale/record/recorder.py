@@ -12,19 +12,25 @@ record/recorder.py — the API an actor or trainer calls.
 
     rec.score(seq.record.digest, train_rev.digest, train_logprobs)   # at update time
 
+    # a replay buffer hands the trainer a stored row again (docs/replay-provenance.md):
+    rec.replay_from(seq.record.digest, actor_id=0, sequence_id="step40/replay3", draw_id="17/3",
+                    content_digest=buffer_digest, is_weight=Fraction(3, 5), rescale=Fraction(1, 2))
+
 Every token must carry a pinned revision: token() raises ProtocolViolation
 without one. Nothing is written until the block exits normally; an exception
 inside the block discards the sequence (and is re-raised).
 """
 from __future__ import annotations
 
+from fractions import Fraction
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from martingale.record.bits import float_bits
+from martingale.record.replay import ReplayProvenance
 from martingale.record.revision import GENESIS_DIGEST, LLMRevision, SamplerConfig, tokenizer_digest, weights_digest
 from martingale.record.store import TokenLedger
-from martingale.record.tokens import ScoreRecord, SequenceRecord, build_sequence
+from martingale.record.tokens import ScoreRecord, SequenceRecord, TokenRecord, build_sequence, prompt_digest
 
 
 class ProtocolViolation(RuntimeError):
@@ -125,6 +131,71 @@ class Recorder:
             prev = r.digest
         self.ledger.append_scores(records)
         return records
+
+    # ---- replayed rows ----------------------------------------------------------
+
+    def replay_from(self, origin_digest: str, *, actor_id: int, sequence_id: str, draw_id: str, content_digest: str,
+                    is_weight: Fraction | float | int, rescale: Fraction | float | int = 1,
+                    reward: float | None = None, dtype: str = "f32") -> SequenceRecord:
+        """Register a row a replay buffer hands to the trainer, copying the behaviour log-prob bits and the
+        revisions of the fresh sequence it came from. `reward` is the row's new advantage, if any."""
+        try:
+            origin = self.ledger.get_sequence(origin_digest)
+        except KeyError:
+            raise KeyError(f"replay origin sequence not in ledger: {origin_digest}") from None
+        if origin.replay is not None:
+            raise ValueError(f"replay origin {origin_digest[:12]} must be a fresh sequence")
+        prov = ReplayProvenance.of(draw_id, content_digest, is_weight=is_weight, rescale=rescale, origin_digest=origin.digest)
+        steps = [(t.revision_digest, t.token_id, t.logprob_bits, t.topk) for t in origin.tokens]
+        return self._append_replayed(actor_id, sequence_id, (origin.prompt_digest, origin.prompt_len, origin.prompt_ids),
+                                     steps, prov, reward, dtype)
+
+    def replayed(self, actor_id: int, sequence_id: str, prompt_ids: Sequence[int], steps: Sequence[tuple], *,
+                 draw_id: str, content_digest: str, is_weight: Fraction | float | int,
+                 rescale: Fraction | float | int = 1, origin_digest: str | None = None,
+                 reward: float | None = None, dtype: str = "f32") -> SequenceRecord:
+        """Register a replayed row from the buffer's own copy of it.
+
+        `steps` are (revision_digest, token_id, logprob[, topk]) with the behaviour log-prob as a float
+        (encoded with `dtype`) or an already-encoded bits string; every revision must be published here.
+        With `origin_digest` the row must equal that fresh sequence token for token (the ledger refuses it
+        otherwise); without it the tokens are bound only to the buffer's claim (docs/nonclaims.md)."""
+        if not steps:
+            raise ProtocolViolation("a replayed row needs at least one token")
+        encoded: list[tuple[str, int, str, tuple[tuple[int, str], ...] | None]] = []
+        for st in steps:
+            rev, tok, lp = st[0], st[1], st[2]
+            topk = st[3] if len(st) > 3 else None
+            if not rev:
+                raise ProtocolViolation("replayed token without a pinned revision digest")
+            if not self.ledger.has_revision(rev):
+                raise ProtocolViolation(f"revision {rev} has not been published")
+            tk = None if topk is None else tuple((int(t), b if isinstance(b, str) else float_bits(b, dtype)) for t, b in topk)
+            encoded.append((rev, int(tok), lp if isinstance(lp, str) else float_bits(lp, dtype), tk))
+        prov = ReplayProvenance.of(draw_id, content_digest, is_weight=is_weight, rescale=rescale, origin_digest=origin_digest)
+        ids = tuple(int(t) for t in prompt_ids)
+        return self._append_replayed(actor_id, sequence_id, (prompt_digest(ids), len(ids), ids), encoded, prov, reward, dtype)
+
+    def _append_replayed(self, actor_id: int, sequence_id: str, prompt: tuple[str, int, tuple[int, ...] | None],
+                         steps: Sequence[tuple[str, int, str, tuple[tuple[int, str], ...] | None]],
+                         prov: ReplayProvenance, reward: float | None, dtype: str) -> SequenceRecord:
+        ledger = self.ledger
+        # index and head are read here and checked again inside append_sequence's transaction, as
+        # SequenceBuilder does: a concurrent writer on this actor makes the append fail closed, never interleave
+        prev_seq = ledger.last_sequence_digest(actor_id)
+        tokens: list[TokenRecord] = []
+        prev = prev_seq
+        for pos, (rev, tok, bits, topk) in enumerate(steps):
+            t = TokenRecord(revision_digest=rev, position=pos, token_id=tok, logprob_bits=bits, prev_digest=prev, topk=topk)
+            tokens.append(t)
+            prev = t.digest
+        pdigest, plen, pids = prompt
+        seq = SequenceRecord(actor_id=actor_id, sequence_index=ledger.next_sequence_index(actor_id),
+                             sequence_id=sequence_id, prompt_digest=pdigest, prompt_len=plen, tokens=tuple(tokens),
+                             prev_sequence_digest=prev_seq,
+                             reward_bits=None if reward is None else float_bits(reward, dtype),
+                             prompt_ids=pids if self.keep_prompt_ids else None, replay=prov)
+        return ledger.append_sequence(seq)
 
     def export_for_checker(self, out_dir: Path | str) -> Path:
         return self.ledger.export_for_checker(Path(out_dir))

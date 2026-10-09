@@ -1,0 +1,13 @@
+{
+ "ok": true,
+ "anchored": true,
+ "n_revisions": 20,
+ "n_sequences": 76,
+ "n_replayed_sequences": 12,
+ "n_tokens": 290,
+ "head": "79f949f3714cbe1fc9694f388ff2eb5fd1904d9d94ff70f80608ecc7d8acc62e",
+ "heads": {
+  "0": "fac48c2a010fbf77f716260ae58cb05bc4244a3acc3c3a9a8f4686c20fbe7387"
+ },
+ "errors": {}
+}

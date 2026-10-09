@@ -133,4 +133,8 @@ Spec == Init /\ [][Next]_vars
 \* The invariant should hold for the correct ordering
 THEOREM Spec => []PinInvariant
 
+\* State constraint for TLC: the ledger grows without bound (actors cycle back to IDLE),
+\* so the check explores every interleaving up to four appended records.
+LedgerBounded == Len(ledger) <= 4
+
 ================================================================================

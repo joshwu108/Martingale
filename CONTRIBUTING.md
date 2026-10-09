@@ -3,7 +3,7 @@
 ## Setup
 
 ```bash
-uv sync                  # core, no dependencies
+uv sync                  # core CLI and its small Click dependency
 uv sync --extra prod     # optional: torch, prometheus, CLI
 make check               # checker import isolation + full test suite
 ```

@@ -35,10 +35,15 @@ TRL's shuffle and split helpers carry it to ``_compute_loss``. When the id is
 absent (another trainer) rows fall back to content matching with a FIFO per
 (prompt, completion), so duplicates are scored once each. Rows whose
 behavior log-probs contain NaN (vLLM reports None for some tokens) are
-skipped and counted in ``stats["nan_rows"]``. Multi-process: give each rank
-its own workspace; the ledger serialises writers on one file but the
-actor-id chains are per rank. Nothing on this path claims the draw itself
-is verifiable.
+skipped and counted in ``stats["nan_rows"]``. A replay buffer registers the
+rows it hands the trainer with ``register_replayed`` (docs/replay-provenance.md)
+and puts the returned id in ``martingale_row_id``; a negative id marks a row
+the buffer could not register and the loss path skips it. Multi-process: a row id packs
+the allocating rank into its high bits (``pack_row_id``), so ids never collide across
+ranks and a scattered row still says which recorder named it; every rank shares one
+workspace (one ``tokens.db``, one actor chain per rank) and an id another rank
+allocated is resolved through the ledger's row-id table (docs/replay-provenance.md,
+"More than one process"). Nothing on this path claims the draw itself is verifiable.
 
 Tested against TRL 1.13.0 (``_trl_compat``). ``MartingaleRecorder`` imports
 nothing from TRL; ``MartingaleGRPOTrainer`` is built on first access.
@@ -49,7 +54,10 @@ import functools
 from typing import TYPE_CHECKING, Any
 
 from martingale.record import Recorder, SamplerConfig, weights_digest
+from martingale.record.bits import float_bits
+from martingale.record.replay import AmbiguousOrigin, OriginNotFound
 from martingale.record.revision import LLMRevision, tokenizer_digest
+from martingale.record.tokens import prompt_digest
 
 if TYPE_CHECKING:
     import torch
@@ -58,6 +66,25 @@ SAMPLING_LOGPROBS_KEY = "sampling_per_token_logps"
 OLD_LOGPROBS_KEY = "old_per_token_logps"
 ROW_ID_KEY = "martingale_row_id"
 KEEP_GENERATIONS = 2          # row maps kept for the last N generation batches
+ROW_ID_RANK_BITS = 40         # row id = rank << 40 | local counter; rank 0 ids are the plain counter
+_MAX_RANK = 1 << 23           # int64 leaves 23 bits for the rank
+_LOCAL_MASK = (1 << ROW_ID_RANK_BITS) - 1
+
+
+def pack_row_id(rank: int, local_id: int) -> int:
+    """The ``martingale_row_id`` for the ``local_id``-th row the recorder on ``rank`` allocated."""
+    if not 0 <= rank < _MAX_RANK:
+        raise ValueError(f"rank must be in [0, {_MAX_RANK}), got {rank}")
+    if not 0 <= local_id <= _LOCAL_MASK:
+        raise ValueError(f"local row id must be in [0, 2**{ROW_ID_RANK_BITS}), got {local_id}")
+    return (rank << ROW_ID_RANK_BITS) | local_id
+
+
+def unpack_row_id(row_id: int) -> tuple[int, int]:
+    """(rank, local id) of a packed row id; a negative id (the skip sentinel) unpacks to (-1, -1)."""
+    if row_id < 0:
+        return -1, -1
+    return row_id >> ROW_ID_RANK_BITS, row_id & _LOCAL_MASK
 
 
 def _tokenizer_bytes(tokenizer: Any) -> bytes | str:
@@ -145,9 +172,11 @@ class MartingaleRecorder:
         self._next_row_id = 0
         self._rows_by_id: dict[int, str] = {}
         self._generations: list[tuple[dict[int, str], dict[tuple[tuple[int, ...], tuple[int, ...]], list[str]]]] = []
+        self._step_cache: dict[str, int] = {}
         self.stats: dict[str, int] = {"generation_calls": 0, "sequences": 0, "tokens": 0,
                                       "score_calls": 0, "scored_tokens": 0, "unmatched_rows": 0,
-                                      "nan_rows": 0, "revisions": 0}
+                                      "nan_rows": 0, "revisions": 0, "skipped_rows": 0,
+                                      "replayed_sequences": 0, "replayed_tokens": 0, "foreign_rows": 0}
 
     # ---- revisions ----------------------------------------------------------------
 
@@ -209,10 +238,12 @@ class MartingaleRecorder:
         plen, clen = _prefix_lengths(p_mask, "suffix"), _prefix_lengths(c_mask, "prefix")
         width = p_ids.size(1)
         n = c_ids.size(0)
-        row_ids = list(range(self._next_row_id, self._next_row_id + n))
+        local_ids = list(range(self._next_row_id, self._next_row_id + n))
+        row_ids = [pack_row_id(actor, i) for i in local_ids]
         self._next_row_id += n
         by_id: dict[int, str] = {}
         by_content: dict[tuple[tuple[int, ...], tuple[int, ...]], list[str]] = {}
+        bound: list[tuple[int, int, str]] = []
         for r in range(n):
             prompt = [int(x) for x in p_ids[r, width - plen[r]:].tolist()]           # left-padded
             comp = [int(x) for x in c_ids[r, :clen[r]].tolist()]                       # right-padded
@@ -222,33 +253,122 @@ class MartingaleRecorder:
             if any(math.isnan(x) or math.isinf(x) for x in row_lp):
                 self.stats["nan_rows"] += 1
                 continue
-            with self.recorder.sequence(actor, f"step{step}/row{row_ids[r]}", prompt) as seq:
+            with self.recorder.sequence(actor, f"step{step}/row{local_ids[r]}", prompt) as seq:
                 for pos, tok in enumerate(comp):
                     seq.token(rev.digest, tok, row_lp[pos], dtype=self._dtype)
                 if adv is not None:
                     seq.reward(float(adv[r]), dtype=self._dtype)
             digest = seq.record.digest
             by_id[row_ids[r]] = digest
+            bound.append((actor, local_ids[r], digest))
             by_content.setdefault((tuple(prompt), tuple(comp)), []).append(digest)
             self.stats["sequences"] += 1
             self.stats["tokens"] += len(comp)
+        self.recorder.ledger.bind_row_ids(bound)
         self._generations.append((by_id, by_content))
         del self._generations[:-KEEP_GENERATIONS]
         out = dict(output)
         out[ROW_ID_KEY] = torch.tensor(row_ids, dtype=torch.int64, device=output["completion_ids"].device)
         return out
 
+    # ---- replayed rows ------------------------------------------------------------
+
+    def sequence_digest(self, row_id: int) -> str | None:
+        """The recorded sequence behind a ``martingale_row_id``: the in-memory maps of the last
+        KEEP_GENERATIONS batches first, then the ledger's row-id table (any rank, any age)."""
+        for by_id, _by_content in reversed(self._generations):
+            if row_id in by_id:
+                return by_id[row_id]
+        rank, local = unpack_row_id(int(row_id))
+        return None if rank < 0 else self.recorder.ledger.row_digest(rank, local)
+
+    def _steps_of(self, seq: Any) -> set[int]:
+        out = set()
+        for d in seq.revision_digests:
+            if d not in self._step_cache:
+                self._step_cache[d] = self.recorder.ledger.get_revision(d).step
+            out.add(self._step_cache[d])
+        return out
+
+    def _find_origin(self, prompt_ids: list[int], completion_ids: list[int], behavior_step: int,
+                     behavior_logprobs: Any) -> str:
+        cands = [s for s in self.recorder.ledger.find_fresh_sequences(prompt_digest(prompt_ids), completion_ids)
+                 if behavior_step in self._steps_of(s)]
+        if not cands:
+            raise OriginNotFound(f"no fresh sequence generated at step {behavior_step} matches the replayed row")
+        if len(cands) == 1:
+            return cands[0].digest
+        if behavior_logprobs is not None:
+            bits = [float_bits(float(x), self._dtype) for x in behavior_logprobs]
+            exact = [s for s in cands if [t.logprob_bits for t in s.tokens] == bits]
+            if len(exact) == 1:
+                return exact[0].digest
+            cands = exact or cands
+        raise AmbiguousOrigin(f"{len(cands)} fresh sequences generated at step {behavior_step} match the replayed row"
+                              + ("" if behavior_logprobs is not None else "; pass behavior_logprobs to tell them apart"))
+
+    def register_replayed(self, trainer: Any, *, draw_id: str, content_digest: str, is_weight: Any, rescale: Any = 1,
+                          advantage: float | None = None, origin_digest: str | None = None,
+                          prompt_ids: Any = None, completion_ids: Any = None, behavior_step: int | None = None,
+                          behavior_logprobs: Any = None) -> int:
+        """Register a row a replay buffer is about to train on. Returns the row id to put in
+        ``martingale_row_id`` so the loss path scores it as a replayed sequence (lag = train step -
+        behaviour step, provenance ``replayed``).
+
+        The row is a copy of a fresh sequence in this record: name it with ``origin_digest``, or give
+        ``prompt_ids``, ``completion_ids`` and ``behavior_step`` (the global step that generated it) and it
+        is looked up among the fresh sequences. When several fresh rows of that step share the content
+        (GRPO groups repeat short completions), ``behavior_logprobs`` (the buffer's stored per-token
+        log-probs) picks the one whose recorded bits equal them; without that it raises ``AmbiguousOrigin``.
+        Raises ``OriginNotFound`` when there is no usable origin (a buffer restored from another run, or a
+        named digest that is missing or itself replayed): put -1 in the row id and the row is skipped
+        rather than mis-attributed.
+        """
+        ledger = self.recorder.ledger
+        if origin_digest is None:
+            if prompt_ids is None or completion_ids is None or behavior_step is None:
+                raise TypeError("register_replayed needs origin_digest or (prompt_ids, completion_ids, behavior_step)")
+            origin_digest = self._find_origin([int(t) for t in prompt_ids], [int(t) for t in completion_ids],
+                                              int(behavior_step), behavior_logprobs)
+        else:
+            try:
+                origin = ledger.get_sequence(origin_digest)
+            except KeyError:
+                raise OriginNotFound(f"origin sequence {origin_digest[:12]} is not in the record") from None
+            if origin.replay is not None:
+                raise OriginNotFound(f"origin sequence {origin_digest[:12]} is itself a replayed row")
+        step = int(trainer.state.global_step)
+        actor = int(getattr(getattr(trainer, "accelerator", None), "process_index", 0))
+        local_id = self._next_row_id
+        row_id = pack_row_id(actor, local_id)
+        seq = self.recorder.replay_from(origin_digest, actor_id=actor, sequence_id=f"step{step}/replay{local_id}",
+                                        draw_id=draw_id, content_digest=content_digest, is_weight=is_weight,
+                                        rescale=rescale, reward=None if advantage is None else float(advantage),
+                                        dtype=self._dtype)
+        self._next_row_id += 1
+        ledger.bind_row_ids([(actor, local_id, seq.digest)])
+        if not self._generations:
+            self._generations.append(({}, {}))
+        by_id, by_content = self._generations[-1]
+        by_id[row_id] = seq.digest
+        by_content.setdefault((tuple(seq.prompt_ids or ()), tuple(t.token_id for t in seq.tokens)), []).append(seq.digest)
+        self.stats["replayed_sequences"] += 1
+        self.stats["replayed_tokens"] += len(seq.tokens)
+        return row_id
+
     # ---- scores -------------------------------------------------------------------
 
-    def _lookup(self, row_id: int | None, key: tuple) -> str | None:
+    def _lookup(self, row_id: int | None, key: tuple, rank: int | None = None) -> str | None:
         """Row id first (exact, reusable: TRL scores the same row once per iteration and per
-        optimizer step, each under a different revision); else content, round-robin over
-        duplicates so identical rows in one batch map to distinct sequences."""
-        for by_id, by_content in reversed(self._generations):
-            if row_id is not None:
-                if row_id in by_id:
-                    return by_id[row_id]
-                continue
+        optimizer step, each under a different revision), falling back to the ledger's row-id
+        table for ids another rank allocated or older than the kept maps; else content,
+        round-robin over duplicates so identical rows in one batch map to distinct sequences."""
+        if row_id is not None:
+            id_rank, _local = unpack_row_id(row_id)
+            if rank is not None and id_rank != rank:
+                self.stats["foreign_rows"] += 1
+            return self.sequence_digest(row_id)
+        for _by_id, by_content in reversed(self._generations):
             lst = by_content.get(key)
             if lst:
                 digest = lst.pop(0)
@@ -269,12 +389,16 @@ class MartingaleRecorder:
         p_mask, c_mask = am[:, :-logits_to_keep], am[:, -logits_to_keep:]
         plen, clen = _prefix_lengths(p_mask, "suffix"), _prefix_lengths(c_mask, "prefix")
         rid = None if row_ids is None else [int(x) for x in row_ids.to("cpu").tolist()]
+        rank = int(getattr(getattr(trainer, "accelerator", None), "process_index", 0))
         width = p_ids.size(1)
         matched = 0
         for r in range(c_ids.size(0)):
+            if rid is not None and rid[r] < 0:            # a replayed row the buffer could not register
+                self.stats["skipped_rows"] += 1
+                continue
             key = (tuple(int(x) for x in p_ids[r, width - plen[r]:].tolist()),
                    tuple(int(x) for x in c_ids[r, :clen[r]].tolist()))
-            digest = self._lookup(None if rid is None else rid[r], key)
+            digest = self._lookup(None if rid is None else rid[r], key, rank)
             if digest is None:
                 self.stats["unmatched_rows"] += 1
                 continue
@@ -357,5 +481,6 @@ def __getattr__(name: str) -> Any:
     raise AttributeError(name)
 
 
-__all__ = ["MartingaleRecorder", "MartingaleGRPOMixin", "build_trainer_class", "sampler_from_trainer"]
+__all__ = ["AmbiguousOrigin", "MartingaleRecorder", "MartingaleGRPOMixin", "OriginNotFound", "build_trainer_class",
+           "sampler_from_trainer"]
 # MartingaleGRPOTrainer is served lazily by __getattr__ (it needs TRL).

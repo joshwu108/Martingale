@@ -66,7 +66,7 @@ def status(workspace: str):
     click.echo(f"  trajectories: {n_trajectories}")
     if (ws / "tokens.db").exists():
         from martingale.record import TokenLedger
-        tl = TokenLedger(ws / "tokens.db")
+        tl = TokenLedger(ws / "tokens.db", readonly=True)
         click.echo(f"  llm revisions: {sum(1 for _ in tl.all_revisions())}")
         click.echo(f"  sequences    : {tl.count_sequences()}")
 
@@ -164,7 +164,7 @@ def _verify_tokens(ws: Path, expected_head: str | None) -> bool:
     from checker.verify_tokens import verify_export
     from martingale.record import TokenLedger
 
-    tl = TokenLedger(ws / "tokens.db")
+    tl = TokenLedger(ws / "tokens.db", readonly=True)
     with tempfile.TemporaryDirectory(prefix="martingale_verify_tokens_") as tmp:
         report = verify_export(tl.export_for_checker(Path(tmp) / "export"), expected_head=expected_head)
     click.echo("Token record verification" + (" (anchored):" if report["anchored"]
@@ -200,7 +200,7 @@ def doctor(workspace: str, eps: tuple[float, ...], json_out: str | None, md_out:
     if not (ws / "tokens.db").exists():
         click.echo(f"No token record at {ws / 'tokens.db'}", err=True)
         sys.exit(1)
-    d = decompose(TokenLedger(ws / "tokens.db"), eps=tuple(eps))
+    d = decompose(TokenLedger(ws / "tokens.db", readonly=True), eps=tuple(eps))
     d["attribution"] = attribute(d)
     md = render_markdown(d)
     click.echo(md, nl=False)
@@ -250,7 +250,7 @@ def recompute(workspace: str, model: str, dtype: str, device: str, tolerance: fl
     if not (ws / "tokens.db").exists():
         click.echo(f"No token record at {ws / 'tokens.db'}", err=True)
         sys.exit(1)
-    report = _recompute(TokenLedger(ws / "tokens.db"), hf_score_fn(model, dtype, device), tolerance)
+    report = _recompute(TokenLedger(ws / "tokens.db", readonly=True), hf_score_fn(model, dtype, device), tolerance)
     click.echo(render(report), nl=False)
     if json_out:
         Path(json_out).write_text(_json.dumps(report, indent=1))

@@ -75,11 +75,14 @@ forward at a precision the engine's weights cannot represent do. Full artifacts 
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
-uv sync
-uv run martingale demo
+uv tool install martingale
+martingale demo
 ```
 
 The demo records a synthetic run and prints the same kind of diagnosis for it.
+For a source checkout, use `uv sync` and `uv run martingale demo` instead.
+The TRL adapter needs `pip install "martingale[trl]"`; the inspector needs
+`pip install "martingale[server]"`.
 
 ## The problem
 
@@ -159,6 +162,14 @@ Weights & Biases shows them), and raises on an error-level alarm unless you pass
 
 Each checkpoint gets a `martingale_head.txt` so a resumed run anchors on the right head.
 
+A replay buffer that hands the trainer stored rows registers each one with
+`flight.register_replayed(...)`; the doctor then shows a `replayed` bucket next
+to the fresh rows (lag, floor, ESS per bucket, the buffer's declared weights
+against the ratios the trainer's scores measure, `martingale/replayed_*`
+metrics) and the checker verifies that every replayed row is the fresh
+generation it claims to copy. The contract a buffer implements is in
+[`docs/replay-provenance.md`](docs/replay-provenance.md).
+
 Per batch row it records the unpadded prompt, every completion token, the
 behavior log-prob bits (vLLM's sampling log-probs when present, else TRL's
 old log-probs, else a no-grad pass; which one is bound into the revision), a
@@ -209,9 +220,12 @@ transfers to neural policies by itself.
 
 The record is append-only and hash-chained, and `martingale verify --dir ws --head <head>`
 runs an independent checker (`checker/`, imports nothing from `martingale`) that
-re-derives every digest. 90 of 90 single-fault forgeries are rejected when the
-head printed by the trainer is supplied (`campaigns/mutation_tokens.py`). The
-checker verifies binding, not the draw: an engine does not expose a keyed draw,
+re-derives every digest. 120 of 120 single-fault forgeries are rejected when the
+head printed by the trainer is supplied (`campaigns/mutation_tokens.py`), 115
+without it. Rows a replay buffer hands the trainer sit in the same record with
+provenance `replayed` and the buffer's draw id, content digest and importance
+weight bound into the chain ([`docs/replay-provenance.md`](docs/replay-provenance.md)).
+The checker verifies binding, not the draw: an engine does not expose a keyed draw,
 so "this token was sampled from that distribution" is not a claim (non-claims).
 Underneath is the exact-arithmetic research core the project started as (rational
 MDPs, exact expected gradients, keyed draws, a TLA+ model of pin-before-draw with
@@ -248,13 +262,12 @@ campaigns/         identity, staleness, boundary, float_baselines, mutation, mut
                    interleave, estimator_bench, e2e_demo
 results/           committed evidence (JSON reports)
 spec/              TLA+ models, .cfg files, check.sh (run in CI)
-docs/              design.md, preregistration.md, nonclaims.md
+docs/              design.md, preregistration.md, nonclaims.md, replay-provenance.md
 paper/             claim_evidence.md
 benchmarks/modal/  trl_grpo_vllm.py: the real runs on Modal; sync_probe.py: elementwise weight-sync check
 ```
 
-`martingale serve` is the old Observatory dashboard over the exact ledger; it
-will be rebuilt as the rollout inspector over the token record.
+`martingale serve` opens the rollout inspector over the token record.
 
 ## Contributing
 

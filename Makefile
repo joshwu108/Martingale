@@ -1,10 +1,15 @@
-.PHONY: check test lint typecheck check-imports install clean
+.PHONY: check test lint typecheck check-imports install clean release
 
 # Run all checks: import isolation, then tests
 check: check-imports lint typecheck test
 
 install:
 	uv sync --all-extras
+
+# Build and validate release artifacts locally; publishing is a separate manual step.
+release:
+	uv build
+	uv run --with twine twine check dist/*
 
 # Ensure checker/ imports nothing from src/
 check-imports:

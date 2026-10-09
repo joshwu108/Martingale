@@ -6,11 +6,21 @@ latter makes SQLite use F_FULLFSYNC on Darwin; ignored elsewhere). A sequence
 is written in one transaction after its last token, so a SIGKILL mid-sequence
 loses that sequence and nothing else. export_for_checker() writes the
 file-based form checker/verify_tokens.py reads.
+
+Readers (the inspector, `martingale doctor`/`verify`, tests over a committed
+record) open with ``TokenLedger(path, readonly=True)``: a ``mode=ro`` URI
+connection that never creates a table or an index and refuses every mutation.
+A WAL-mode file opened read-only still gets ``-wal``/``-shm`` sidecars that a
+read-only connection cannot remove on close, so a quiescent record (no ``-wal``
+next to it, i.e. no writer holds it) is opened ``immutable=1`` and leaves the
+directory exactly as it found it; a record a writer holds open is read through
+its WAL and the writer removes the sidecars when it closes.
 """
 from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
 import shutil
 import sqlite3
@@ -18,9 +28,10 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, Sequence
 
 from martingale.record.bits import GENESIS_DIGEST, digest_json
+from martingale.record.replay import check_replay_origin
 from martingale.record.revision import LLMRevision
 from martingale.record.tokens import ScoreRecord, SequenceRecord
 
@@ -50,10 +61,38 @@ CREATE TABLE IF NOT EXISTS scores (
 """
 
 
+_ROW_IDS_SCHEMA = """CREATE TABLE IF NOT EXISTS row_ids (
+    rank INTEGER NOT NULL,
+    local_id INTEGER NOT NULL,
+    sequence_digest TEXT NOT NULL,
+    PRIMARY KEY (rank, local_id)
+)"""
 _NO_LIMIT = 2**62   # SQLite rowids are signed 64-bit; "no upper bound" for the *_since readers
+_PROMPT_EXPR = "json_extract(record_json, '$.prompt_digest')"   # expression index: origin lookup for replayed rows
 
 
-def _connect(db_path: Path) -> sqlite3.Connection:
+def _ensure_prompt_index(con: sqlite3.Connection) -> bool:
+    """Index sequences by prompt digest (needs SQLite's JSON functions); False means fall back to a scan.
+    Created on the first origin lookup, not on open, so reading a record never rewrites its file."""
+    try:
+        con.execute(f"CREATE INDEX IF NOT EXISTS sequences_prompt_digest ON sequences({_PROMPT_EXPR})")
+        return True
+    except sqlite3.OperationalError as exc:
+        logging.getLogger("martingale").warning("prompt-digest index unavailable (%s); origin lookups will scan", exc)
+        return False
+
+
+def _wal_path(db_path: Path) -> Path:
+    return db_path.with_name(db_path.name + "-wal")
+
+
+def _connect(db_path: Path, readonly: bool = False) -> sqlite3.Connection:
+    if readonly:
+        if not db_path.is_file():
+            raise FileNotFoundError(f"no token record at {db_path}")
+        quiescent = not _wal_path(db_path).exists()      # no writer holds the file: read it without sidecars
+        uri = f"{db_path.resolve().as_uri()}?mode=ro" + ("&immutable=1" if quiescent else "")
+        return sqlite3.connect(uri, uri=True, check_same_thread=False, timeout=30.0, isolation_level=None)
     con = sqlite3.connect(str(db_path), check_same_thread=False, timeout=30.0, isolation_level=None)
     con.execute("PRAGMA journal_mode=WAL")
     con.execute("PRAGMA synchronous=FULL")
@@ -66,15 +105,25 @@ class TokenLedger:
     included) under a process-local lock; a failure rolls back, so a sequence or a score
     batch is written entirely or not at all, and two writers on one file serialise."""
 
-    def __init__(self, db_path: Path) -> None:
+    def __init__(self, db_path: Path, readonly: bool = False) -> None:
+        """``readonly=True`` opens an existing record for reading only (module docstring): nothing is
+        created, nothing is written, and a mutation raises ``sqlite3.OperationalError``."""
         self._path = Path(db_path)
+        self.readonly = readonly
+        self._lock = threading.RLock()
+        if readonly:
+            self._con = _connect(self._path, readonly=True)
+            self._prompt_index: bool | None = False  # never create the index; origin lookups scan
+            return
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._con = _connect(self._path)
-        self._lock = threading.RLock()
         self._con.executescript(_SCHEMA)
+        self._prompt_index = None                   # unknown until the first origin lookup needs it
 
     @contextlib.contextmanager
     def _tx(self, immediate: bool = True):
+        if immediate and self.readonly:
+            raise sqlite3.OperationalError(f"token record {self._path} is open read-only")
         with self._lock:
             self._con.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
             try:
@@ -125,12 +174,19 @@ class TokenLedger:
         return GENESIS_DIGEST if row is None else row[0]
 
     def append_sequence(self, seq: SequenceRecord) -> SequenceRecord:
-        """Fail closed: refuses an unknown revision, a gap in the per-actor index, or a broken chain.
+        """Fail closed: refuses an unknown revision, a gap in the per-actor index, a broken chain, and a
+        replayed row whose claimed origin is missing, not fresh, or differs from it token for token.
         The checks and the insert are one transaction."""
         with self._tx():
             for d in seq.revision_digests:
                 if not self.has_revision(d):
                     raise KeyError(f"sequence references unpublished revision {d}")
+            if seq.replay is not None and seq.replay.origin_digest is not None:
+                try:
+                    origin = self.get_sequence(seq.replay.origin_digest)
+                except KeyError:
+                    raise KeyError(f"replay origin sequence not in ledger: {seq.replay.origin_digest}") from None
+                check_replay_origin(seq, origin)
             expected_index = self.next_sequence_index(seq.actor_id)
             if seq.sequence_index != expected_index:
                 raise ValueError(f"actor {seq.actor_id}: expected sequence_index {expected_index}, got {seq.sequence_index}")
@@ -221,6 +277,59 @@ class TokenLedger:
         ).fetchall()
         return [ScoreRecord.from_dict(json.loads(r)) for (r,) in rows]
 
+    # ---- replayed rows ----------------------------------------------------------
+
+    def find_fresh_sequences(self, prompt_digest: str, token_ids: Sequence[int] | None = None) -> list[SequenceRecord]:
+        """Fresh (not replayed) sequences with this prompt digest and, when given, exactly these completion
+        token ids, in insertion order. This is how a replay buffer's row is tied back to the generation
+        that produced it (docs/replay-provenance.md)."""
+        if self._prompt_index is None:
+            with self._lock:
+                self._prompt_index = _ensure_prompt_index(self._con)
+        if self._prompt_index:
+            rows = self._con.execute(f"SELECT record_json FROM sequences WHERE {_PROMPT_EXPR} = ? ORDER BY rowid",
+                                     (prompt_digest,)).fetchall()
+        else:
+            rows = self._con.execute("SELECT record_json FROM sequences ORDER BY rowid").fetchall()
+        want = None if token_ids is None else [int(t) for t in token_ids]
+        out = []
+        for (r,) in rows:
+            seq = SequenceRecord.from_dict(json.loads(r))
+            if seq.prompt_digest != prompt_digest or seq.replay is not None:
+                continue
+            if want is None or [t.token_id for t in seq.tokens] == want:
+                out.append(seq)
+        return out
+
+    # ---- row ids (adapter bookkeeping, outside the record and the export) -------------
+
+    def bind_row_ids(self, rows: Sequence[tuple[int, int, str]]) -> None:
+        """Remember which sequence a trainer row id names: (rank, local id, sequence digest). The table
+        is created on first use so that opening a record for reading never rewrites its file. With one
+        workspace shared by every rank, an id allocated on one rank resolves on another."""
+        if not rows:
+            return
+        with self._tx():
+            self._con.execute(_ROW_IDS_SCHEMA)
+            self._con.executemany("INSERT OR REPLACE INTO row_ids (rank, local_id, sequence_digest) VALUES (?,?,?)",
+                                  [(int(rank), int(local), digest) for rank, local, digest in rows])
+
+    def row_digest(self, rank: int, local_id: int) -> str | None:
+        """The sequence digest bound to (rank, local id), or None (unknown id, or a record without the table)."""
+        try:
+            row = self._con.execute("SELECT sequence_digest FROM row_ids WHERE rank=? AND local_id=?",
+                                    (int(rank), int(local_id))).fetchone()
+        except sqlite3.OperationalError:
+            return None
+        return None if row is None else row[0]
+
+    def count_replayed_sequences(self) -> int:
+        try:
+            return self._con.execute(
+                "SELECT COUNT(*) FROM sequences WHERE json_extract(record_json, '$.provenance') = 'replayed'").fetchone()[0]
+        except sqlite3.OperationalError:
+            return sum(1 for s in self.all_sequences() if s.replay is not None)
+
     # ---- head -----------------------------------------------------------------
 
     def head(self) -> str:
@@ -276,6 +385,8 @@ class TokenLedger:
 
     def checkpoint_wal(self) -> None:
         """Fold the write-ahead log into the main file (copying tokens.db alone is otherwise empty)."""
+        if self.readonly:
+            return                                  # a reader cannot checkpoint; the writer does on close
         with self._lock:
             self._con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 
