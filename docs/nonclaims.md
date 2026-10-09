@@ -180,8 +180,11 @@ Every result is scoped to the constraints below.
   have not run on two GPUs or through `accelerate`; nothing is claimed about SQLite
   write contention under many ranks, and a record without a shared workspace loses
   the scattered rows to `unmatched` rather than recording them.
-- **No real run with replayed rows yet.** The evidence is the fake-trainer test
-  (`tests/test_trl_replayed.py`), the record and checker tests, and the mutation
-  campaign. D2's acceptance in Reservoir's plan (one TRL run with both adapters
-  whose record both checkers accept and whose doctor report shows the replayed
-  bucket) waits on the Reservoir-side wiring in `docs/replay-provenance.md` §4.
+- **One real run with replayed rows, with a synthetic buffer.** The run of
+  2026-10-09 (`docs/replay-provenance.md` §5) used `benchmarks/modal/replay_inject.py`,
+  not Reservoir: 12 replayed rows of 76, one seed, one model, one recipe. It shows the
+  Martingale half of D2 (record, doctor, checker) on real numbers and nothing about
+  Reservoir's wiring, its checker, or the join between the two records, which waits
+  on `docs/replay-provenance.md` §4. The buffer's declared weights were exact at the
+  step they were computed and off by nats a step later on one tail row; the doctor
+  reports that gap and does not judge it.

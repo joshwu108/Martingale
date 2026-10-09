@@ -1,6 +1,6 @@
 # Real-run results (2026-10-06)
 
-Four runs of `benchmarks/modal/trl_grpo_vllm.py`: Qwen2.5-0.5B-Instruct, TRL 1.13.0 GRPO, vLLM 0.28.0,
+Five runs of `benchmarks/modal/trl_grpo_vllm.py`: Qwen2.5-0.5B-Instruct, TRL 1.13.0 GRPO, vLLM 0.28.0,
 16 optimizer steps, `num_iterations=2`, `steps_per_generation=2`, 8 generations per prompt, 2-digit
 addition with exact-match reward, seed 0, lr 5e-6. Each directory holds the doctor report (`report.md`,
 `report.json`), the anchored checker verdict (`verify.json`, `head.txt`), the alarms and per-step metrics
@@ -15,6 +15,7 @@ decoded text (`worst_tokens.json`) and `config.json`. The two `_probe` directori
 | `..._t1.0_fp32_probe` | colocate, 1x A10G | fp32, no autocast | 0.0027, 0.81, 1.03, 0.15 (bit-identical re-run) | yes: 0 of 494,032,768 elements differ, at all 4 syncs | ok, anchored |
 | `..._t1.0_probe` | colocate, 1x A10G | bf16 autocast (`bf16=True`) | 0.008, 0.0001, 0.0027, 0.027 | yes: 0 differ | ok, anchored |
 | `..._t0.7` | server, 2x A10G | fp32, no autocast | 6.1e-05 (zero gradient at every step; trainer never moved) | n/a | ok, anchored |
+| `..._t1.0_replay1of4_replay` | colocate, 1x A10G | bf16 autocast; 4 of 16 rows per batch after the first replayed from earlier batches (`replay_inject.py`) | 0.008, 0.0001, 0.0065, 0.0007 | yes: 0 differ at all 4 syncs | ok, anchored; 76 sequences, 12 replayed with origin |
 
 ## The headline, corrected
 
@@ -35,6 +36,19 @@ checkpoint by steps 8 and 12), and the same recipe is seen collapsing the policy
 
 The `_t0.7` server-mode floor of 6e-5 is not a temperature result: every step of that run had zero
 gradient (all rewards 1.0), so its lag-0 numbers measure kernel numerics on unchanged weights.
+
+## Replayed rows (2026-10-09)
+
+`_t1.0_replay1of4_replay` is the bf16 recipe with a synthetic replay buffer attached
+(`benchmarks/modal/replay_inject.py`, `--replay-fraction 1/4`): after each generation batch
+after the first, 4 of its 16 rows are replaced by completions from earlier batches and
+registered as replayed rows with their origin, draw id, content digest and an exact importance
+weight. The directory also holds `replay.json` (rows replaced per step, draw ids, row ids, pool
+size). The checker accepts the record anchored on `head.txt` with 12 replayed sequences bound to
+fresh origins; the doctor buckets them apart from fresh rows at lags 4..15 and reports the
+buffer's declared sequence-level ESS/n (0.83) next to the one measured from the trainer's scores
+(0.83); the one alarm is an `ess_collapse` at step 11 on fresh rows at lag 2. Predictions made
+before the run and what held are in `docs/replay-provenance.md` §5.
 
 ## Known defects of earlier adapter versions (fixed the same day)
 
