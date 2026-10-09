@@ -33,6 +33,10 @@ Usage
   modal run benchmarks/modal/trl_grpo_vllm.py --max-steps 24
   modal run benchmarks/modal/trl_grpo_vllm.py --tag probe            # keep the result dir separate
   modal run benchmarks/modal/trl_grpo_vllm.py --fp32-trainer         # the first run's misconfiguration
+  modal run benchmarks/modal/trl_grpo_vllm.py --replay-fraction 1/4 --tag replay
+                                                                   # D2 acceptance: a quarter of every batch after the
+                                                                   # first is re-injected from earlier generations as
+                                                                   # replayed rows with provenance (replay_inject.py)
 
 Precision. The trainer runs under bf16 autocast (GRPOConfig bf16=True) so that its
 forward sees the same bf16-rounded weights vLLM holds. The first run (2026-10-06) used
@@ -69,6 +73,7 @@ image = (
     .add_local_dir(str(REPO_ROOT / "src"), "/repo/src")
     .add_local_dir(str(REPO_ROOT / "checker"), "/repo/checker")
     .add_local_file(str(_here.parent / "sync_probe.py"), "/repo/sync_probe.py")
+    .add_local_file(str(_here.parent / "replay_inject.py"), "/repo/replay_inject.py")
 )
 app = modal.App("martingale-trl-grpo-vllm")
 hf_cache = modal.Volume.from_name("martingale-hf-cache", create_if_missing=True)
@@ -121,8 +126,11 @@ def _worst_tokens(ledger, tokenizer, n: int = 40) -> list[dict]:
 
 @app.function(image=image, gpu=GPU, timeout=60 * 60, memory=32768, volumes={"/hf_cache": hf_cache})
 def run_grpo(max_steps: int = 16, seed: int = 0, temperature: float = 1.0, batch_invariant: bool = False,
-             fp32_trainer: bool = False) -> dict:
+             fp32_trainer: bool = False, replay_fraction: str = "0") -> dict:
+    from fractions import Fraction
+
     import torch
+    from replay_inject import SyntheticReplay
     from sync_probe import SyncProbe
     from transformers import AutoModelForCausalLM, AutoTokenizer
     from trl import GRPOConfig
@@ -148,9 +156,21 @@ def run_grpo(max_steps: int = 16, seed: int = 0, temperature: float = 1.0, batch
         vllm_importance_sampling_correction=False,
     )
     Trainer = build_trainer_class()
+    replay = Fraction(replay_fraction)
+    if replay > 0:
+        class Trainer(Trainer):  # type: ignore[no-redef]  # noqa: F811
+            """Martingale's on_generation runs in super(); the synthetic buffer then replaces rows and registers them."""
+
+            def _generate_and_score_completions(self, inputs):
+                output = super()._generate_and_score_completions(inputs)
+                if not self.model.training:
+                    return output
+                return self.synthetic_replay.after_generation(output, self)
     trainer = Trainer(model=model, args=args, train_dataset=_addition_dataset(512, seed),
                       reward_funcs=exact_match_reward, processing_class=tok, flight_recorder=flight,
                       halt_on_error=False)       # first real run: record alarms, never lose the data to one
+    synthetic = SyntheticReplay(flight, replay, seed=seed, pad_token_id=tok.pad_token_id) if replay > 0 else None
+    trainer.synthetic_replay = synthetic
     probe = SyncProbe(trainer)                   # elementwise vLLM-vs-trainer check at every weight sync
     print("SYNC_PROBE facts", json.dumps(probe.facts), flush=True)
     trainer.train()
@@ -171,19 +191,24 @@ def run_grpo(max_steps: int = 16, seed: int = 0, temperature: float = 1.0, batch
         "stats": flight.stats, "log_history": trainer.state.log_history,
         "alarms": alarms, "per_step_metrics": per_step, "worst_tokens": worst, "sync_probe": sync_probe,
         "tokens_db": (work / "ws" / "tokens.db").read_bytes(),
+        "replay": None if synthetic is None else {**synthetic.stats, "pool_size": synthetic.pool_size,
+                                                  "fraction": str(replay)},
         "config": {"model": MODEL_ID, "vllm": VLLM_VERSION, "trl": "1.13.0", "gpu": GPU, "vllm_mode": "colocate",
                    "max_steps": max_steps, "seed": seed, "temperature": temperature,
                    "batch_invariant": batch_invariant, "trainer_bf16": not fp32_trainer,
-                   "num_iterations": 2, "steps_per_generation": 2},
+                   "num_iterations": 2, "steps_per_generation": 2, "replay_fraction": str(replay)},
     }
 
 
 @app.local_entrypoint()
 def main(max_steps: int = 16, seed: int = 0, temperature: float = 1.0, batch_invariant: bool = False,
-         fp32_trainer: bool = False, tag: str = ""):
+         fp32_trainer: bool = False, replay_fraction: str = "0", tag: str = ""):
+    from fractions import Fraction
+    replay = Fraction(replay_fraction)                 # "1/4" or "0.25"; exact either way
     res = run_grpo.remote(max_steps=max_steps, seed=seed, temperature=temperature, batch_invariant=batch_invariant,
-                          fp32_trainer=fp32_trainer)
-    tag = f"_t{temperature}" + ("_bi" if batch_invariant else "") + ("_fp32" if fp32_trainer else "") + (f"_{tag}" if tag else "")
+                          fp32_trainer=fp32_trainer, replay_fraction=str(replay))
+    tag = (f"_t{temperature}" + ("_bi" if batch_invariant else "") + ("_fp32" if fp32_trainer else "")
+           + (f"_replay{replay.numerator}of{replay.denominator}" if replay else "") + (f"_{tag}" if tag else ""))
     out = RESULTS_DIR / f"trl_grpo_vllm_a10g_{max_steps}steps_seed{seed}{tag}"
     out.mkdir(parents=True, exist_ok=True)
     (out / "tokens.db").write_bytes(res.pop("tokens_db"))
@@ -195,6 +220,8 @@ def main(max_steps: int = 16, seed: int = 0, temperature: float = 1.0, batch_inv
     (out / "alarms.json").write_text(json.dumps({"alarms": res["alarms"], "per_step_metrics": res["per_step_metrics"]}, indent=1))
     (out / "worst_tokens.json").write_text(json.dumps(res["worst_tokens"], indent=1))
     (out / "sync_probe.json").write_text(json.dumps(res["sync_probe"], indent=1))
+    if res["replay"] is not None:
+        (out / "replay.json").write_text(json.dumps(res["replay"], indent=1))
     (out / "config.json").write_text(json.dumps({**res["config"], "stats": res["stats"]}, indent=1))
     print((out / "report.md").read_text())
     print("verify ok:", res["verify"]["ok"], "| head:", res["head"], "| alarms:", len(res["alarms"]))

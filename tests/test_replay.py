@@ -21,7 +21,7 @@ def test_replay_demo_is_one_step_whose_cumulative_equals_decompose(demo_ws):
 
 @needs_real_record
 def test_replay_real_record_raises_stale_server_at_the_generations_the_engine_served_old_weights():
-    ledger = TokenLedger(REAL_RECORD / "tokens.db")
+    ledger = TokenLedger(REAL_RECORD / "tokens.db", readonly=True)
     steps = replay(ledger)
     assert [s.diagnosis.step for s in steps] == list(range(1, 17))
     assert [s.diagnosis.n_new_scores for s in steps] == [34, 30, 34, 30, 27, 29, 27, 29, 27, 29, 27, 29, 32, 32, 32, 32]
@@ -38,6 +38,6 @@ def test_replay_real_record_raises_stale_server_at_the_generations_the_engine_se
 
 @needs_real_record
 def test_replay_honours_alarm_config():
-    ledger = TokenLedger(REAL_RECORD / "tokens.db")
+    ledger = TokenLedger(REAL_RECORD / "tokens.db", readonly=True)
     steps = replay(ledger, AlarmConfig(confident_min_tokens=10))
     assert not any(a.kind == "stale_server" for s in steps for a in s.alarms)

@@ -6,6 +6,15 @@ latter makes SQLite use F_FULLFSYNC on Darwin; ignored elsewhere). A sequence
 is written in one transaction after its last token, so a SIGKILL mid-sequence
 loses that sequence and nothing else. export_for_checker() writes the
 file-based form checker/verify_tokens.py reads.
+
+Readers (the inspector, `martingale doctor`/`verify`, tests over a committed
+record) open with ``TokenLedger(path, readonly=True)``: a ``mode=ro`` URI
+connection that never creates a table or an index and refuses every mutation.
+A WAL-mode file opened read-only still gets ``-wal``/``-shm`` sidecars that a
+read-only connection cannot remove on close, so a quiescent record (no ``-wal``
+next to it, i.e. no writer holds it) is opened ``immutable=1`` and leaves the
+directory exactly as it found it; a record a writer holds open is read through
+its WAL and the writer removes the sidecars when it closes.
 """
 from __future__ import annotations
 
@@ -52,6 +61,12 @@ CREATE TABLE IF NOT EXISTS scores (
 """
 
 
+_ROW_IDS_SCHEMA = """CREATE TABLE IF NOT EXISTS row_ids (
+    rank INTEGER NOT NULL,
+    local_id INTEGER NOT NULL,
+    sequence_digest TEXT NOT NULL,
+    PRIMARY KEY (rank, local_id)
+)"""
 _NO_LIMIT = 2**62   # SQLite rowids are signed 64-bit; "no upper bound" for the *_since readers
 _PROMPT_EXPR = "json_extract(record_json, '$.prompt_digest')"   # expression index: origin lookup for replayed rows
 
@@ -67,7 +82,17 @@ def _ensure_prompt_index(con: sqlite3.Connection) -> bool:
         return False
 
 
-def _connect(db_path: Path) -> sqlite3.Connection:
+def _wal_path(db_path: Path) -> Path:
+    return db_path.with_name(db_path.name + "-wal")
+
+
+def _connect(db_path: Path, readonly: bool = False) -> sqlite3.Connection:
+    if readonly:
+        if not db_path.is_file():
+            raise FileNotFoundError(f"no token record at {db_path}")
+        quiescent = not _wal_path(db_path).exists()      # no writer holds the file: read it without sidecars
+        uri = f"{db_path.resolve().as_uri()}?mode=ro" + ("&immutable=1" if quiescent else "")
+        return sqlite3.connect(uri, uri=True, check_same_thread=False, timeout=30.0, isolation_level=None)
     con = sqlite3.connect(str(db_path), check_same_thread=False, timeout=30.0, isolation_level=None)
     con.execute("PRAGMA journal_mode=WAL")
     con.execute("PRAGMA synchronous=FULL")
@@ -80,16 +105,25 @@ class TokenLedger:
     included) under a process-local lock; a failure rolls back, so a sequence or a score
     batch is written entirely or not at all, and two writers on one file serialise."""
 
-    def __init__(self, db_path: Path) -> None:
+    def __init__(self, db_path: Path, readonly: bool = False) -> None:
+        """``readonly=True`` opens an existing record for reading only (module docstring): nothing is
+        created, nothing is written, and a mutation raises ``sqlite3.OperationalError``."""
         self._path = Path(db_path)
+        self.readonly = readonly
+        self._lock = threading.RLock()
+        if readonly:
+            self._con = _connect(self._path, readonly=True)
+            self._prompt_index: bool | None = False  # never create the index; origin lookups scan
+            return
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._con = _connect(self._path)
-        self._lock = threading.RLock()
         self._con.executescript(_SCHEMA)
-        self._prompt_index: bool | None = None      # unknown until the first origin lookup needs it
+        self._prompt_index = None                   # unknown until the first origin lookup needs it
 
     @contextlib.contextmanager
     def _tx(self, immediate: bool = True):
+        if immediate and self.readonly:
+            raise sqlite3.OperationalError(f"token record {self._path} is open read-only")
         with self._lock:
             self._con.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
             try:
@@ -267,6 +301,28 @@ class TokenLedger:
                 out.append(seq)
         return out
 
+    # ---- row ids (adapter bookkeeping, outside the record and the export) -------------
+
+    def bind_row_ids(self, rows: Sequence[tuple[int, int, str]]) -> None:
+        """Remember which sequence a trainer row id names: (rank, local id, sequence digest). The table
+        is created on first use so that opening a record for reading never rewrites its file. With one
+        workspace shared by every rank, an id allocated on one rank resolves on another."""
+        if not rows:
+            return
+        with self._tx():
+            self._con.execute(_ROW_IDS_SCHEMA)
+            self._con.executemany("INSERT OR REPLACE INTO row_ids (rank, local_id, sequence_digest) VALUES (?,?,?)",
+                                  [(int(rank), int(local), digest) for rank, local, digest in rows])
+
+    def row_digest(self, rank: int, local_id: int) -> str | None:
+        """The sequence digest bound to (rank, local id), or None (unknown id, or a record without the table)."""
+        try:
+            row = self._con.execute("SELECT sequence_digest FROM row_ids WHERE rank=? AND local_id=?",
+                                    (int(rank), int(local_id))).fetchone()
+        except sqlite3.OperationalError:
+            return None
+        return None if row is None else row[0]
+
     def count_replayed_sequences(self) -> int:
         try:
             return self._con.execute(
@@ -329,6 +385,8 @@ class TokenLedger:
 
     def checkpoint_wal(self) -> None:
         """Fold the write-ahead log into the main file (copying tokens.db alone is otherwise empty)."""
+        if self.readonly:
+            return                                  # a reader cannot checkpoint; the writer does on close
         with self._lock:
             self._con.execute("PRAGMA wal_checkpoint(TRUNCATE)")
 

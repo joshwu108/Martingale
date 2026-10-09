@@ -31,7 +31,7 @@ def create_app(workspace: str | Path, tokenizer: Any = None, head: str | None = 
     db = ws / "tokens.db"
     if not db.exists():
         raise FileNotFoundError(f"no token record at {db}")
-    view = RecordView(TokenLedger(db), load_tokenizer(tokenizer), head=head, workspace=ws)
+    view = RecordView(TokenLedger(db, readonly=True), load_tokenizer(tokenizer), head=head, workspace=ws)
     app = FastAPI(title="martingale inspector", version="0.2.0")
     app.state.inspector = view
     app.include_router(doctor_router(view))

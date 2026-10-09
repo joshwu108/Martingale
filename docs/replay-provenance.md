@@ -189,7 +189,171 @@ behaviour log-probs (TRL's `old_per_token_logps` or its own no-grad forward),
 and they equal Martingale's recorded bits only when Martingale took its bits
 from the same tensor, which is the case without vLLM sampling log-probs;
 `batch.content_digests` is empty unless groups were inserted with content
-digests; with more than one process only the owner rank mixes, so the row ids it
-allocates belong to its own recorder and workspace, which is the single-process
-path only until `mix_distributed` scatters the ids back. One TRL run with both
-adapters attached is D2's acceptance test and has not been run yet.
+digests; with more than one process only the owner rank mixes and the ids it
+returns are scattered to other ranks, which §6 covers. One TRL run with both
+adapters attached is D2's acceptance test and has not been run yet; §5 is the
+Martingale half of it, run on 2026-10-09 with a synthetic buffer.
+
+## 5. Acceptance run (prepared 2026-10-08, run 2026-10-09)
+
+`benchmarks/modal/trl_grpo_vllm.py --replay-fraction 1/4` is the headline recipe
+(Qwen2.5-0.5B-Instruct, TRL 1.13 GRPO, vLLM 0.28 colocate, bf16 autocast, 16 steps,
+`num_iterations=2`, `steps_per_generation=2`, 8 generations per prompt) with a
+synthetic replay buffer attached, `benchmarks/modal/replay_inject.py`. After every
+generation batch (16 rows), the buffer replaces `floor(16/4) = 4` rows with completions
+drawn deterministically (seeded by `seed` and the step) from earlier generation batches
+and registers each one with `register_replayed(origin_digest=...)`: draw id
+`"<step>/<row>"`, content digest BLAKE2b-256 over the prompt and completion ids, the
+importance weight `exp(sum_t log pi_now - log pi_behaviour)` from one no-grad forward of
+the current trainer weights, stored exactly, rescale 1, and the row's original advantage.
+The row's tensors are rewritten to the origin's tokens and behaviour log-probs, so the
+loss trains on them and the recorder scores them by id. The first batch (step 0) has no
+earlier rows and is left alone; the batches at steps 4, 8 and 12 each carry 4 replayed
+rows, 12 in all. The CPU test of the same path with the fake trainer is
+`tests/test_replay_inject.py`.
+
+```bash
+modal run benchmarks/modal/trl_grpo_vllm.py --replay-fraction 1/4 --tag replay
+# results: benchmarks/modal/results/trl_grpo_vllm_a10g_16steps_seed0_t1.0_replay1of4_replay/
+#          (the usual files plus replay.json: rows replaced per step, draw ids, pool size)
+```
+
+What the record and the reports should show, given the bf16 baseline run
+(`..._t1.0_probe`: 64 sequences, one `floor_jump` at step 13, checker ok):
+
+- `verify.json`: `ok`, anchored on `head.txt`, `n_sequences == 76` (64 fresh + 12 replayed
+  on actor 0's chain), `n_replayed_sequences == 12`; every replayed row names an origin in
+  the same export and the checker's origin pass accepts it.
+- `report.json`: `n_replayed_sequences == 12`; `n_unscored_sequences == 12` (the fresh rows
+  the buffer replaced stay recorded and unscored: generated, not trained on);
+  `by_provenance.fresh.by_lag` at lags 0..3 as in the baseline; `by_provenance.replayed.by_lag`
+  only at lags >= 4 (a row generated at step 0 and trained at steps 4..7 has lags 4..7; the
+  batches at 8 and 12 may draw from any earlier batch, so lags up to 15 are possible) with
+  `attribution.floor_source == "fresh lag-0"`; `replayed.n_sequences == 12`,
+  `n_scored_sequences == 12`, `n_without_origin == 0`; `replayed.sequence_weights.n == 12`,
+  `declared_ess_fraction` and `measured_ess_fraction` both reported, `n_dispersion_rows > 0`
+  and `log_weight_dispersion` well under the 1-nat line (the declared weight is measured
+  with the weights of the generation step; the trainer's first complete score of a row is
+  at that step or the next, so the two differ by at most one optimizer step of drift, which
+  the baseline puts at 1e-4 to 3e-2 nats per token).
+- `report.md`: one "Replayed rows: 12 sequences (... 25% of scored tokens) at lags 4..N"
+  line with the declared-versus-measured ESS/n; no "disagree by ... nats" line and no
+  "no fresh origin" line.
+- `alarms.json`: the baseline's alarms only (a `floor_jump` or `floor_tail` late in the run is
+  possible on this collapsing recipe); no `stale_server`, no `unmatched` (replayed rows are
+  matched by id: `stats.skipped_rows == 0`, `stats.unmatched_rows == 0`), and
+  `martingale/replayed_tokens > 0` with `martingale/replayed_share` near 0.25 from step 5 on,
+  plus `martingale/replayed_ess_fraction_lag{k}` for the lags above.
+- `replay.json`: `replaced_rows == 12`, `unregistered_rows == 0`, `per_step` with three entries
+  (steps 4, 8, 12) of four rows each.
+
+### Measured (2026-10-09)
+
+The run above (`--tag replay`) produced
+`benchmarks/modal/results/trl_grpo_vllm_a10g_16steps_seed0_t1.0_replay1of4_replay/`.
+`uv run martingale verify --dir <dir> --head $(cat <dir>/head.txt)`: anchored, 20 revisions,
+76 sequences, 290 tokens, all sequences verified clean. `uv run martingale doctor --dir <dir>`
+reproduces `report.md`. Prediction by prediction, with the predictions above left as written:
+
+- `verify.json`: **held.** `ok`, `anchored`, head `79f949f3…acc62e` equal to `head.txt`,
+  `n_sequences == 76`, `n_replayed_sequences == 12`, `n_tokens == 290` (240 fresh + 50
+  replayed), one chain (actor 0), `errors == {}`.
+- `report.json`: **held**, except the dispersion reasoning. `n_replayed_sequences == 12`,
+  `n_unscored_sequences == 12`, 494 scored tokens (394 fresh + 100 replayed: every replayed
+  row scored twice, `num_iterations=2`). `by_provenance.fresh.by_lag` at lags 0..3;
+  `by_provenance.replayed.by_lag` at lags 4..15 and nowhere below 4 (behaviour steps 0, 4
+  and 8 drawn at steps 4, 8 and 12; a row's two scores land at distance d..d+3), every
+  replayed bucket with `floor_source == "fresh lag-0"`. `replayed.n_sequences == 12`,
+  `n_scored_sequences == 12`, `n_without_origin == 0`. `sequence_weights`: `n == 12`,
+  `n_overflow == 0`, `n_zero_weight == 0`, `declared_ess_fraction` 0.825,
+  `measured_ess_fraction` 0.832, `n_dispersion_rows == 11` over 6 train steps,
+  `log_weight_dispersion` 0.725 nats, `mean_log_declared_minus_measured` -0.66 nats.
+  The dispersion is under the 1-nat line, so the doctor stays silent, but it is not "well
+  under" and the reasoning given above **did not hold**: one optimizer step of drift is
+  1e-4 to 3e-2 nats per token only for the bulk of tokens; on a tail token it is nats.
+  Ten of the twelve rows agree within 4% between declared and measured (the five rows scored
+  at their registration step agree to 1e-3, so the buffer computes its weight the way the
+  trainer scores). The row `step4/replay32` (origin `step0/row7`, 11 tokens, two of them 4
+  and 6.9 nats below the behaviour policy) was declared 1.7e-7 at step 4 and measured
+  3.2e-4 at step 5 and 1.0e-8 at step 7: 7.6 nats of movement in one step. That one row is
+  the -0.66 mean offset and most of the dispersion. A declared weight is current only at
+  the step it was computed; the prediction should have said so.
+- `report.md`: **held, except "25%".** The line reads "Replayed rows: 12 sequences (100
+  scored tokens, 20% of scored tokens) at lags 4..15; lowest token-level ESS/n 0.80 at lag
+  7. The buffer's declared weights give a sequence-level ESS/n of 0.83 over 12 rows; the
+  trainer's scores measure 0.83." The share is 20%, not 25%: the first batch carries no
+  replayed rows, so 12 of the 64 trained rows (18.75%) and 100 of 494 scored tokens are
+  replayed. No "disagree by ... nats" line (the threshold is 1 nat) and no "no fresh
+  origin" line, as predicted.
+- `alarms.json`: **did not hold as written.** The only alarm is `ess_collapse` (warn) at
+  step 11: "lag 2: effective sample size is 20% of 21 tokens", on fresh rows (the replayed
+  bucket has no lag-2 tokens). The baseline's `floor_jump` at step 13 did not fire. The
+  prediction "the baseline's alarms only" was wrong to expect the same alarms: the batches
+  differ, so the training trajectory differs (rewards per generation 0.94, 1.0, 0.56, 0.94
+  against the baseline's 1.0, 1.0, 0.19, 0.0; one seed, nothing claimed from it). No
+  `stale_server`, no `unmatched`: held; `stats.skipped_rows == 0`, `unmatched_rows == 0`,
+  `nan_rows == 0`, `foreign_rows == 0`. `martingale/replayed_tokens > 0` at every step from
+  5 on (7, 14, 7, 14, 7, 8, 7, 8, 3, 11, 3, 11): held. `martingale/replayed_share` "near
+  0.25": held on average (0.27 over steps 5..16), not step by step (0.25, 0.39, 0.25, 0.39,
+  0.25, 0.28, 0.25, 0.28, 0.10, 0.35, 0.10, 0.35): a step scores one micro-batch of 8 rows,
+  which carries 1 to 3 of the 4 replayed rows, and rows differ in length.
+  `martingale/replayed_ess_fraction_lag{k}` and `replayed_mean_abs_log_ratio_lag{k}` for
+  every k in 4..15: held.
+- `replay.json`: **held.** `replaced_rows == 12`, `unregistered_rows == 0`, `per_step`
+  at steps 4, 8, 12 with rows [5, 11, 14, 15], [4, 7, 8, 10], [4, 6, 10, 12], behaviour
+  steps (0, 0, 0, 0), (0, 0, 0, 4), (0, 0, 8, 8), row ids 32..35, 52..55, 72..75; pool
+  size 64; draw ids `"4/5"` .. `"12/12"`.
+
+Token level, the replayed buckets at lags 4, 6 and 8..15 sit at mean |log r| 1e-3 to 3e-2
+(ESS/n >= 0.997); lags 5 and 7 are at 0.74 and 1.15 nats (ESS/n 0.86 and 0.80), carried by
+the tail tokens of `replay32` and `step12/replay74` (origin `step8/row47`, whose token "6"
+in "162" is 10 nats below the behaviour policy for the fresh copies at lags 2 and 3 as well,
+`worst_tokens.json`). The lag-0 floor per generation was 0.008, 0.0001, 0.0065, 0.0007 and
+the sync probe found 0 of 494,032,768 elements differing at all four syncs, as in the
+baseline. The run exposed no bug in the adapter, the record, the doctor or the checker; no
+rerun is needed.
+
+What it proves: on real engine and trainer numbers, rows a buffer hands the trainer are
+bound in the record with their provenance, scored by id at the right lag, bucketed apart
+from fresh rows by the doctor, and accepted by the independent checker with the origin
+binding. What it does not prove: anything about Reservoir's own wiring (§4), its checker,
+or the join between the two records; that is the other half of D2 and needs the Reservoir
+session's integration first. It also says nothing about whether a buffer's declared weight
+is a good weight: this buffer's was exact for the step it was computed at and a step later
+was off by nats on a tail row, which the doctor reports and does not judge.
+
+## 6. More than one process: the row-id contract
+
+Reservoir's `mix_distributed` gathers every rank's generation slice to rank 0, replaces
+dead rows there, and scatters the rewritten slices back; a replayed row therefore reaches
+the loss on a rank other than the one whose recorder registered it. The Martingale side
+of that is in `MartingaleRecorder` (`tests/test_distributed_rows.py` plays it out with two
+fake ranks over one workspace):
+
+- **A row id names its rank.** `martingale_row_id = rank << 40 | local`, with
+  `pack_row_id(rank, local)` / `unpack_row_id(row_id)` in `martingale.integrations.trl`;
+  the rank is the trainer's `accelerator.process_index` and the local counter is the
+  recorder's own. Rank 0 ids are the plain counter, so single-process records are
+  unchanged. `-1` stays the skip sentinel.
+- **Every rank shares one workspace.** All ranks open the same `tokens.db` path (one node,
+  or a filesystem every rank sees); each rank is its own actor chain (`actor_id = rank`)
+  and SQLite serialises the writers (30 s busy timeout). Every id a rank allocates, fresh
+  or replayed, is bound to its sequence digest in the ledger's `row_ids` table,
+  bookkeeping outside the record: not exported, not digested, not checked, kept when
+  `tokens.db` is copied, created on first write so reading an old record never rewrites it.
+- **A rank resolves any id through the ledger.** `on_scores` looks a row id up in its own
+  maps, then in the table (any rank, any age); ids from another rank are counted in
+  `stats["foreign_rows"]`. With separate workspaces per rank a foreign id cannot be
+  resolved: it counts as `unmatched_rows` and the `unmatched` alarm fires, instead of the
+  row being scored against the wrong sequence.
+- **The owner registers, the record resolves the origin.** Rank 0 calls
+  `register_replayed` on its own recorder; `find_fresh_sequences` is a ledger query, so an
+  origin generated on another rank is found through the shared file. The returned id is
+  rank 0's; put it in the scattered row. `OriginNotFound` still means `-1`.
+
+What Reservoir must do, and nothing more: carry `martingale_row_id` through
+`gather_object`, `concat_shards`, `write_rows` and `slice_shard` unchanged (it already
+does: a 1-D per-row tensor is copied, never renumbered); register on the owner rank with
+the owner's flight recorder; and launch every rank with the same workspace path. Ranks
+that disagree on `global_step` are already refused by `mix_distributed`. A real
+multi-GPU run of this path has not happened; the evidence is the two-rank fake.
