@@ -175,6 +175,11 @@ Every result is scoped to the constraints below.
   verifiable; the behaviour log-probs are whatever the engine reported when the
   row was fresh; the lag-0 floor assumptions carry over to the replayed bucket,
   which borrows the fresh floor when it has no lag-0 tokens of its own.
+- **Multi-process row ids are tested with two fake ranks in one process.** The
+  rank-packed ids and the shared-workspace resolution (`docs/replay-provenance.md` §6)
+  have not run on two GPUs or through `accelerate`; nothing is claimed about SQLite
+  write contention under many ranks, and a record without a shared workspace loses
+  the scattered rows to `unmatched` rather than recording them.
 - **No real run with replayed rows yet.** The evidence is the fake-trainer test
   (`tests/test_trl_replayed.py`), the record and checker tests, and the mutation
   campaign. D2's acceptance in Reservoir's plan (one TRL run with both adapters
