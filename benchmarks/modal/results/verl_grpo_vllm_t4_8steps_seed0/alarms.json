@@ -1,0 +1,219 @@
+{
+ "alarms": [
+  {
+   "kind": "weights_unchanged",
+   "level": "error",
+   "step": 7,
+   "message": "generation at step 7 ran under the same trainer weights as the generation at step 4 although optimizer steps happened in between (frozen model, lr 0, or a broken optimizer)",
+   "evidence": {
+    "weights_digest": "68210f3405759d4e07cfc66b17d53b127a912e7f2c24eea5590dc308436b317b",
+    "previous_step": 4
+   }
+  },
+  {
+   "kind": "floor_jump",
+   "level": "warn",
+   "step": 7,
+   "message": "lag-0 floor is 5.1x its trailing median (1.31e-04 vs 2.55e-05): engine config, dtype or server settings may have changed",
+   "evidence": {
+    "floor": 0.00013088520998863511,
+    "trailing_median": 2.5541150152850543e-05,
+    "factor": 5.124483792051453
+   }
+  },
+  {
+   "kind": "floor_jump",
+   "level": "warn",
+   "step": 11,
+   "message": "lag-0 floor is 10.0x its trailing median (7.81e-04 vs 7.82e-05): engine config, dtype or server settings may have changed",
+   "evidence": {
+    "floor": 0.0007807024529376897,
+    "trailing_median": 7.821318007074283e-05,
+    "factor": 9.98172497565697
+   }
+  },
+  {
+   "kind": "floor_tail",
+   "level": "warn",
+   "step": 27,
+   "message": "lag-0 floor jumped 61.0x after a new generation with the median ratio at 1.0000 and no confident disagreements: low-probability tokens disagree by nats (bf16-vs-fp32 tail effect, worse at temperature 1 and as the policy sharpens). Consider FP16, a bit-exact engine, or masking tail ratios.",
+   "evidence": {
+    "floor": 0.0003543409297627478,
+    "trailing_median": 5.808414151896248e-06,
+    "factor": 61.00476317568843,
+    "ratio_p50": 1.0
+   }
+  },
+  {
+   "kind": "floor_tail",
+   "level": "warn",
+   "step": 31,
+   "message": "lag-0 floor jumped 47.0x after a new generation with the median ratio at 1.0000 and no confident disagreements: low-probability tokens disagree by nats (bf16-vs-fp32 tail effect, worse at temperature 1 and as the policy sharpens). Consider FP16, a bit-exact engine, or masking tail ratios.",
+   "evidence": {
+    "floor": 0.0002732562229369327,
+    "trailing_median": 5.808414151896248e-06,
+    "factor": 47.04489311385,
+    "ratio_p50": 1.0
+   }
+  }
+ ],
+ "per_step_metrics": [
+  {
+   "martingale/staleness_share": 0.1005262427309339,
+   "martingale/engine_share": 0.8994737572690661,
+   "martingale/floor_mean_abs_log_ratio": 2.5541150152850543e-05,
+   "martingale/confident_disagreements_lag0": 0.0,
+   "martingale/ess_fraction_lag0": 0.9999999965620139,
+   "martingale/mean_abs_log_ratio_lag0": 2.5541150152850543e-05,
+   "martingale/tokens_lag0": 119.0,
+   "martingale/ess_fraction_lag1": 0.9999999964281114,
+   "martingale/mean_abs_log_ratio_lag1": 2.6049516357255345e-05,
+   "martingale/tokens_lag1": 113.0,
+   "martingale/ess_fraction_lag2": 0.9999999954545598,
+   "martingale/mean_abs_log_ratio_lag2": 3.088713133828127e-05,
+   "martingale/tokens_lag2": 118.0,
+   "martingale/ess_fraction_lag3": 0.99999999553259,
+   "martingale/mean_abs_log_ratio_lag3": 2.81423292323636e-05,
+   "martingale/tokens_lag3": 114.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/staleness_share": 0.9839517511497404,
+   "martingale/engine_share": 0.01604824885025957,
+   "martingale/floor_mean_abs_log_ratio": 0.00013088520998863511,
+   "martingale/confident_disagreements_lag0": 0.0,
+   "martingale/ess_fraction_lag0": 0.9999998436737241,
+   "martingale/mean_abs_log_ratio_lag0": 0.00013088520998863511,
+   "martingale/tokens_lag0": 103.0,
+   "martingale/ess_fraction_lag1": 0.9964197542555119,
+   "martingale/mean_abs_log_ratio_lag1": 0.011050715584183076,
+   "martingale/tokens_lag1": 137.0,
+   "martingale/ess_fraction_lag2": 0.9997905500279457,
+   "martingale/mean_abs_log_ratio_lag2": 0.004228872094591851,
+   "martingale/tokens_lag2": 101.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/staleness_share": 0.9947286636590386,
+   "martingale/engine_share": 0.005271336340961479,
+   "martingale/floor_mean_abs_log_ratio": 0.0007807024529376897,
+   "martingale/confident_disagreements_lag0": 0.0,
+   "martingale/ess_fraction_lag0": 0.999983937061781,
+   "martingale/mean_abs_log_ratio_lag0": 0.0007807024529376897,
+   "martingale/tokens_lag0": 119.0,
+   "martingale/ess_fraction_lag1": 0.9704256809745343,
+   "martingale/mean_abs_log_ratio_lag1": 0.08974474333106741,
+   "martingale/tokens_lag1": 113.0,
+   "martingale/ess_fraction_lag2": 0.943419742219294,
+   "martingale/mean_abs_log_ratio_lag2": 0.24507401567995268,
+   "martingale/tokens_lag2": 118.0,
+   "martingale/ess_fraction_lag3": 0.9769975136432429,
+   "martingale/mean_abs_log_ratio_lag3": 0.10557682606658596,
+   "martingale/tokens_lag3": 114.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/staleness_share": 0.9239706172234533,
+   "martingale/engine_share": 0.07602938277654671,
+   "martingale/floor_mean_abs_log_ratio": 3.2024845434079906e-06,
+   "martingale/confident_disagreements_lag0": 0.0,
+   "martingale/ess_fraction_lag0": 0.9999999999344014,
+   "martingale/mean_abs_log_ratio_lag0": 3.2024845434079906e-06,
+   "martingale/tokens_lag0": 125.0,
+   "martingale/ess_fraction_lag1": 0.9999999983272727,
+   "martingale/mean_abs_log_ratio_lag1": 1.7394243875616475e-05,
+   "martingale/tokens_lag1": 123.0,
+   "martingale/ess_fraction_lag2": 0.9999999930451768,
+   "martingale/mean_abs_log_ratio_lag2": 2.9557753656378294e-05,
+   "martingale/tokens_lag2": 124.0,
+   "martingale/ess_fraction_lag3": 0.9999999661328691,
+   "martingale/mean_abs_log_ratio_lag3": 7.921359663108953e-05,
+   "martingale/tokens_lag3": 124.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/staleness_share": 0.9652115297132026,
+   "martingale/engine_share": 0.03478847028679738,
+   "martingale/floor_mean_abs_log_ratio": 5.808414151896248e-06,
+   "martingale/confident_disagreements_lag0": 0.0,
+   "martingale/ess_fraction_lag0": 0.9999999997741769,
+   "martingale/mean_abs_log_ratio_lag0": 5.808414151896248e-06,
+   "martingale/tokens_lag0": 107.0,
+   "martingale/ess_fraction_lag1": 0.9999999981503771,
+   "martingale/mean_abs_log_ratio_lag1": 9.205770315554361e-06,
+   "martingale/tokens_lag1": 109.0,
+   "martingale/ess_fraction_lag2": 0.9999999022028555,
+   "martingale/mean_abs_log_ratio_lag2": 7.556201134145175e-05,
+   "martingale/tokens_lag2": 110.0,
+   "martingale/ess_fraction_lag3": 0.9999970690509296,
+   "martingale/mean_abs_log_ratio_lag3": 0.00042403750038355403,
+   "martingale/tokens_lag3": 106.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/staleness_share": 0.9649838302155878,
+   "martingale/engine_share": 0.035016169784412216,
+   "martingale/floor_mean_abs_log_ratio": 2.2115189352822226e-06,
+   "martingale/confident_disagreements_lag0": 0.0,
+   "martingale/ess_fraction_lag0": 0.9999999999575531,
+   "martingale/mean_abs_log_ratio_lag0": 2.2115189352822226e-06,
+   "martingale/tokens_lag0": 107.0,
+   "martingale/ess_fraction_lag1": 0.9999999963849783,
+   "martingale/mean_abs_log_ratio_lag1": 3.0660632657264895e-05,
+   "martingale/tokens_lag1": 109.0,
+   "martingale/ess_fraction_lag2": 0.999999985973992,
+   "martingale/mean_abs_log_ratio_lag2": 5.173575903256733e-05,
+   "martingale/tokens_lag2": 110.0,
+   "martingale/ess_fraction_lag3": 0.9999999435168853,
+   "martingale/mean_abs_log_ratio_lag3": 0.00010842554347696473,
+   "martingale/tokens_lag3": 106.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/staleness_share": 0.9985165361723856,
+   "martingale/engine_share": 0.0014834638276144813,
+   "martingale/floor_mean_abs_log_ratio": 0.0003543409297627478,
+   "martingale/confident_disagreements_lag0": 0.0,
+   "martingale/ess_fraction_lag0": 0.9999967600617622,
+   "martingale/mean_abs_log_ratio_lag0": 0.0003543409297627478,
+   "martingale/tokens_lag0": 123.0,
+   "martingale/ess_fraction_lag1": 0.9326947559745721,
+   "martingale/mean_abs_log_ratio_lag1": 0.1174396222859072,
+   "martingale/tokens_lag1": 117.0,
+   "martingale/ess_fraction_lag2": 0.9577176916168605,
+   "martingale/mean_abs_log_ratio_lag2": 0.12798591612827154,
+   "martingale/tokens_lag2": 121.0,
+   "martingale/ess_fraction_lag3": 0.9125440851128815,
+   "martingale/mean_abs_log_ratio_lag3": 0.47097874968850467,
+   "martingale/tokens_lag3": 119.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  },
+  {
+   "martingale/staleness_share": 0.9969903552905431,
+   "martingale/engine_share": 0.0030096447094569143,
+   "martingale/floor_mean_abs_log_ratio": 0.0002732562229369327,
+   "martingale/confident_disagreements_lag0": 0.0,
+   "martingale/ess_fraction_lag0": 0.999998288960479,
+   "martingale/mean_abs_log_ratio_lag0": 0.0002732562229369327,
+   "martingale/tokens_lag0": 107.0,
+   "martingale/ess_fraction_lag1": 0.9815283385431615,
+   "martingale/mean_abs_log_ratio_lag1": 0.09214643339970664,
+   "martingale/tokens_lag1": 109.0,
+   "martingale/ess_fraction_lag2": 0.9809731494374535,
+   "martingale/mean_abs_log_ratio_lag2": 0.17040011195999796,
+   "martingale/tokens_lag2": 110.0,
+   "martingale/ess_fraction_lag3": 0.9993170245741937,
+   "martingale/mean_abs_log_ratio_lag3": 0.006791687850493415,
+   "martingale/tokens_lag3": 106.0,
+   "martingale/span_fraction": 0.0,
+   "martingale/negative_lag_tokens": 0.0
+  }
+ ]
+}

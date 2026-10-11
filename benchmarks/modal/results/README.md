@@ -16,6 +16,53 @@ decoded text (`worst_tokens.json`) and `config.json`. The two `_probe` directori
 | `..._t1.0_probe` | colocate, 1x A10G | bf16 autocast (`bf16=True`) | 0.008, 0.0001, 0.0027, 0.027 | yes: 0 differ | ok, anchored |
 | `..._t0.7` | server, 2x A10G | fp32, no autocast | 6.1e-05 (zero gradient at every step; trainer never moved) | n/a | ok, anchored |
 | `..._t1.0_replay1of4_replay` | colocate, 1x A10G | bf16 autocast; 4 of 16 rows per batch after the first replayed from earlier batches (`replay_inject.py`) | 0.008, 0.0001, 0.0065, 0.0007 | yes: 0 differ at all 4 syncs | ok, anchored; 76 sequences, 12 replayed with origin |
+| `verl_grpo_vllm_t4_8steps_seed0` (2026-10-09) | verl 0.9.1 `RayPPOTrainer`, vLLM 0.24.0 rollout, 1x T4 | fp16 mixed precision, fp32 master | 2.6e-05, 1.3e-04, 7.8e-04, 3.2e-06, 5.8e-06, 2.2e-06, 3.5e-04, 2.7e-04 (whole run 2.0e-04, 910 tokens) | not probed; the rollout revision digest equals the trainer digest at all 8 rollouts (expected weights, not the served ones) | ok, anchored |
+
+## The verl run (2026-10-09)
+
+`benchmarks/modal/verl_grpo_vllm.py --max-steps 8`: Qwen2.5-0.5B-Instruct, verl 0.9.1 GRPO, 8 prompts x 8
+generations per step, `ppo_mini_batch_size=4`, `ppo_epochs=2` (4 optimizer steps per rollout), lr 1e-6, the
+same addition task, seed 0, 10.2 min of training. 512 sequences, 3,541 scored tokens, 0 unmatched rows, lags 0
+to 3. Every assumption in `adapter_checks.json` held (batch keys, no mask holes, row ids through union and
+balance reorder in 8/8 updates and 256/256 loss calls, live log-probs in 256/256 loss calls, rollout digest ==
+trainer digest, `martingale/*` in all 8 logged steps). 31 optimizer steps applied, 1 skipped by the fp16 grad
+scaler (`grad_norm` inf at global step 2). The `weights_unchanged` error alarm is correct: global step 1 had
+reward 1.0 on every completion, `grad_norm` 0 and `pg_loss` 0, so the rollouts at applied steps 0 and 4 carry
+the same weights digest (the alarm names them by the monitor's post-update step, 4 and 7).
+
+The four floor warnings were investigated from the read-only token ledger. The alarm step is when the
+monitor ran **after** an update; each lag-0 comparison below was scored at the earlier rollout revision.
+Log-probs are behavior (vLLM) → trainer; positions are zero-based Qwen completion-token positions. All
+listed tokens have lag 0 and the behavior and trainer revisions have the same expected weights digest.
+
+| warning | score revision; lag-0 tokens | largest recorded gaps (sequence, position, token, log-probs) | finding |
+|---|---|---|---|
+| `floor_jump@7` | 4; 103 | `step4/row89`, 0, `2`, −0.080245309 → −0.082210809 (−0.001965500); rows 88, 93, 94 have the same token and ≈−0.001941234 | Floor 0.000130885, 5.12× the preceding 0.000025541. Those four tokens supply 57.8% of its absolute gap. The score revision still has the step-0 weights digest; the digest changes only in later applied updates. |
+| `floor_jump@11` | 7; 119 | `step7/row186` and `row190`, 1, `3`, −0.717411995 → −0.741696537 (−0.024284542); `row187`, 1, `4`, −0.670536995 → −0.647946537 (+0.022590458); `row184`, 1, `4`, −0.670536995 → −0.655413926 (+0.015123069) | Floor 0.000780702, 9.98× the trailing median. These four answer tokens supply 92.9% of its absolute gap. The step-7 digest differs from step 4, and the monitor ran after further updates at step 11. |
+| `floor_tail@27` | 23; 123 | `step23/row412` and `row414`, 0, `8`, −0.562390685 → −0.549068332 (+0.013322353); `row437`, 1, `9`, −0.072159454 → −0.076635629 (−0.004476175); `row433`, 1, `9`, −0.073255531 → −0.076635629 (−0.003380097) | Floor 0.000354341, 61.0× a very small trailing median. Four ordinary answer tokens supply 79.2% of its absolute gap. The step-23 digest differs from the preceding rollout and from the step-27 rollout digest. |
+| `floor_tail@31` | 27; 107 | `step27/row490` and `row491`, 1, `7`, −0.140651137 → −0.149076641 (−0.008425504); `row488`, 1, `7`, −0.140651137 → −0.146927103 (−0.006275967); `row494`, 1, `7`, −0.146927208 → −0.149076641 (−0.002149433) | Floor 0.000273256, 47.0× the small trailing median; these four tokens supply 86.4% of its absolute gap. The step-27 digest differs from step 23. No rollout after the final update published a step-31 revision. |
+
+There are **zero confident disagreements** in all four lag-0 buckets (and in the run's 910 lag-0
+tokens); the largest lag-0 gap in the run is 0.0243 nats. The `floor_tail` name and old wording inferred
+low-probability tail tokens from a relative jump, but the actual drivers above are mostly ordinary,
+high-probability digits. Small fp16 engine versus mixed-precision trainer numerical differences are
+consistent with these gaps, but the record cannot isolate their kernel/precision cause. The recorded
+rollout/trainer digests match at all eight rollout steps, row IDs survived, and there were no unmatched
+rows: there is no evidence here of an adapter alignment fault. A served-vLLM weight comparison was not
+recorded, so equality of the actual served tensors is not proven. The step boundary explains the alarm
+labels, not the floor change: monitor steps 7, 11 and 27 follow scores at revisions 4, 7 and 23; step
+31 follows scores at 27. The applied-update counter is correct, including the skipped update. We keep
+the warning thresholds and add the score revision step to future alarm evidence and wording.
+
+`trainer_log.json` reports `actor/grad_norm = inf` at global step 2. The worker counted 31 applied and
+one skipped attempt; the ledger has trainer-score revisions at applied steps 0 through 30 and no extra
+version for the skipped attempt. The log is aggregated per global step, so it does not identify which
+of that step's four mini-batch attempts overflowed.
+
+Against `..._t1.0_probe`, the lag-0 floor is not in the same range: 2.0e-04 for the whole verl run against
+1.0e-02 for the TRL run, with per-generation values overlapping only between 1.3e-04 and 7.8e-04. The runs
+differ in framework, GPU, dtype (fp16 vs bf16), step count and learning rate; which of these accounts for the
+difference was not measured.
 
 ## The headline, corrected
 

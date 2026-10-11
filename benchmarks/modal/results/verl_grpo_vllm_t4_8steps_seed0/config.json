@@ -1,0 +1,58 @@
+{
+ "model": "Qwen/Qwen2.5-0.5B-Instruct",
+ "gpu": "T4",
+ "verl": "0.9.1",
+ "vllm": "0.24.0",
+ "torch": "2.11.0+cu130",
+ "trainer": "verl.trainer.ppo.ray_trainer.RayPPOTrainer (use_v1=false)",
+ "adv_estimator": "grpo",
+ "max_steps": 8,
+ "seed": 0,
+ "temperature": 1.0,
+ "lr": 1e-06,
+ "n": 8,
+ "train_batch_size": 8,
+ "ppo_mini_batch_size": 4,
+ "ppo_epochs": 2,
+ "max_prompt_length": 96,
+ "max_response_length": 16,
+ "actor_precision": "fp32 master, fp16 mixed precision",
+ "rollout_dtype": "float16",
+ "calculate_log_probs": true,
+ "wall_clock_seconds": 611.5309574604034,
+ "stats": {
+  "driver": {
+   "generation_calls": 8,
+   "sequences": 512,
+   "tokens": 1808,
+   "score_calls": 0,
+   "scored_tokens": 0,
+   "scored_sequences": 0,
+   "unmatched_rows": 0,
+   "nan_rows": 0,
+   "duplicate_scores": 0,
+   "revisions": 8
+  },
+  "worker": {
+   "generation_calls": 0,
+   "sequences": 0,
+   "tokens": 0,
+   "score_calls": 256,
+   "scored_tokens": 3541,
+   "scored_sequences": 1002,
+   "unmatched_rows": 0,
+   "nan_rows": 0,
+   "duplicate_scores": 22,
+   "revisions": 31
+  },
+  "applied_steps": 31,
+  "skipped_steps": 1,
+  "loss_calls": {
+   "calls": 256,
+   "rows": 1024,
+   "calls_with_row_ids": 256,
+   "live_calls": 256,
+   "detached_calls": 0
+  }
+ }
+}

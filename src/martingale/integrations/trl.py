@@ -63,8 +63,24 @@ nothing from TRL; ``MartingaleGRPOTrainer`` is built on first access.
 from __future__ import annotations
 
 import functools
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Any
 
+from martingale.integrations._common import (
+    KEEP_GENERATIONS,
+    ROW_ID_KEY,
+    ROW_ID_RANK_BITS,
+    ContentKey,
+    Generation,
+    _check_digestable,
+    _prefix_lengths,
+    _tokenizer_bytes,
+    apply_sampler_overrides,
+    check_sampler_overrides,
+    next_by_content,
+    pack_row_id,
+    resolve_row_id,
+    unpack_row_id,
+)
 from martingale.record import Recorder, SamplerConfig, temperature_applied_for, weights_digest
 from martingale.record.bits import float_bits
 from martingale.record.replay import AmbiguousOrigin, OriginNotFound
@@ -76,47 +92,11 @@ if TYPE_CHECKING:
 
 SAMPLING_LOGPROBS_KEY = "sampling_per_token_logps"
 OLD_LOGPROBS_KEY = "old_per_token_logps"
-ROW_ID_KEY = "martingale_row_id"
-KEEP_GENERATIONS = 2          # row maps kept for the last N generation batches
 TRL_VLLM_LOGPROBS_MODE = "processed_logprobs"   # TRL 1.13.0: vllm_generation.py:361 (colocate), vllm_serve.py:265 (server)
 TRAINER_SOURCES = frozenset({"trainer_old_logps", "trainer_recompute", "trainer_scores"})
 # TRL 1.13.0 grpo_trainer.py:1543 divides the logits by self.temperature before selective_log_softmax,
 # on the old-logps pass, the recompute made here and the loss path alike.
 TRAINER_TEMPERATURE_APPLIED = True
-ENGINE_ONLY_OVERRIDES = frozenset({"logprobs_mode", "temperature_applied"})   # describe the engine's bits, not the trainer's
-ROW_ID_RANK_BITS = 40         # row id = rank << 40 | local counter; rank 0 ids are the plain counter
-_MAX_RANK = 1 << 23           # int64 leaves 23 bits for the rank
-_LOCAL_MASK = (1 << ROW_ID_RANK_BITS) - 1
-
-
-def pack_row_id(rank: int, local_id: int) -> int:
-    """The ``martingale_row_id`` for the ``local_id``-th row the recorder on ``rank`` allocated."""
-    if not 0 <= rank < _MAX_RANK:
-        raise ValueError(f"rank must be in [0, {_MAX_RANK}), got {rank}")
-    if not 0 <= local_id <= _LOCAL_MASK:
-        raise ValueError(f"local row id must be in [0, 2**{ROW_ID_RANK_BITS}), got {local_id}")
-    return (rank << ROW_ID_RANK_BITS) | local_id
-
-
-def unpack_row_id(row_id: int) -> tuple[int, int]:
-    """(rank, local id) of a packed row id; a negative id (the skip sentinel) unpacks to (-1, -1)."""
-    if row_id < 0:
-        return -1, -1
-    return row_id >> ROW_ID_RANK_BITS, row_id & _LOCAL_MASK
-
-
-def _tokenizer_bytes(tokenizer: Any) -> bytes | str:
-    """tokenizer.json bytes from a HF tokenizer, raw bytes, or a precomputed digest."""
-    if isinstance(tokenizer, (bytes, str)):
-        return tokenizer
-    backend = getattr(tokenizer, "backend_tokenizer", None)
-    if backend is not None:
-        return backend.to_str().encode("utf-8")
-    vocab = getattr(tokenizer, "get_vocab", None)
-    if vocab is not None:
-        import json
-        return json.dumps(vocab(), sort_keys=True).encode("utf-8")
-    raise TypeError("tokenizer must be a HF tokenizer, tokenizer.json bytes, or a 64-hex digest")
 
 
 def _engine_version(use_vllm: bool) -> str | None:
@@ -128,29 +108,6 @@ def _engine_version(use_vllm: bool) -> str | None:
         return str(transformers.__version__)
     except Exception:
         return None
-
-
-def check_sampler_overrides(overrides: Mapping[str, Any]) -> dict[str, Any]:
-    """Validate user overrides once, at construction: unknown keys and `logprobs_source` are refused
-    (the source is what the adapter observed; relabelling it would merge behavior and trainer revisions)."""
-    if "logprobs_source" in overrides:
-        raise ValueError("sampler_overrides cannot set logprobs_source; the adapter records where the bits came from")
-    SamplerConfig.from_dict(overrides)
-    return dict(overrides)
-
-
-def apply_sampler_overrides(sampler: SamplerConfig, overrides: Mapping[str, Any], logprobs_source: str) -> SamplerConfig:
-    """User overrides on top of what the adapter read. `logprobs_mode` and `temperature_applied` say what
-    the engine reported, so they are applied to engine-sourced revisions only; the trainer-side values
-    come from the framework's own code and an override must not make the two sides agree by accident.
-    An overridden `logprobs_mode` re-derives `temperature_applied` unless that is overridden too."""
-    if not overrides:
-        return sampler
-    skip = () if logprobs_source == "engine_sampling" else ENGINE_ONLY_OVERRIDES
-    merged = {**sampler.to_dict(), **{k: v for k, v in overrides.items() if k not in skip}}
-    if "logprobs_mode" in overrides and "temperature_applied" not in overrides and not skip:
-        merged["temperature_applied"] = temperature_applied_for(merged["logprobs_mode"])
-    return SamplerConfig.from_dict(merged)
 
 
 def sampler_from_trainer(trainer: Any, logprobs_source: str) -> SamplerConfig:
@@ -182,29 +139,6 @@ def sampler_from_trainer(trainer: Any, logprobs_source: str) -> SamplerConfig:
     )
 
 
-def _prefix_lengths(mask: torch.Tensor, side: str) -> list[int]:
-    """Lengths of a right-padded ("prefix": 1..1 0..0) or left-padded ("suffix": 0..0 1..1) mask.
-    Refuses a mask that is not pure padding, because slicing by sum() would misalign tokens silently."""
-    import torch
-
-    m = mask.to("cpu").long()
-    lengths = m.sum(dim=1)
-    n = m.size(1)
-    idx = torch.arange(n).unsqueeze(0)
-    expected = (idx < lengths.unsqueeze(1)) if side == "prefix" else (idx >= (n - lengths).unsqueeze(1))
-    if not bool((m.bool() == expected).all()):
-        raise ValueError(f"{side} mask is not pure padding; cannot slice tokens safely")
-    return [int(x) for x in lengths.tolist()]
-
-
-def _check_digestable(state_dict: dict) -> None:
-    for name, t in state_dict.items():
-        if getattr(t, "is_meta", False) or (hasattr(t, "numel") and t.numel() == 0):
-            raise RuntimeError(
-                f"parameter {name!r} is sharded or on the meta device; the weights digest would be meaningless. "
-                "Gather the full state dict (FSDP/ZeRO-3) before recording.")
-
-
 class MartingaleRecorder:
     """Recorder side of the integration. Imports nothing from TRL."""
 
@@ -220,7 +154,7 @@ class MartingaleRecorder:
         self._wd_cache: dict[int, str] = {}
         self._next_row_id = 0
         self._rows_by_id: dict[int, str] = {}
-        self._generations: list[tuple[dict[int, str], dict[tuple[tuple[int, ...], tuple[int, ...]], list[str]]]] = []
+        self._generations: list[Generation] = []
         self._step_cache: dict[str, int] = {}
         self.stats: dict[str, int] = {"generation_calls": 0, "sequences": 0, "tokens": 0,
                                       "score_calls": 0, "scored_tokens": 0, "unmatched_rows": 0,
@@ -289,7 +223,7 @@ class MartingaleRecorder:
         row_ids = [pack_row_id(actor, i) for i in local_ids]
         self._next_row_id += n
         by_id: dict[int, str] = {}
-        by_content: dict[tuple[tuple[int, ...], tuple[int, ...]], list[str]] = {}
+        by_content: dict[ContentKey, list[str]] = {}
         bound: list[tuple[int, int, str]] = []
         for r in range(n):
             prompt = [int(x) for x in p_ids[r, width - plen[r]:].tolist()]           # left-padded
@@ -323,11 +257,7 @@ class MartingaleRecorder:
     def sequence_digest(self, row_id: int) -> str | None:
         """The recorded sequence behind a ``martingale_row_id``: the in-memory maps of the last
         KEEP_GENERATIONS batches first, then the ledger's row-id table (any rank, any age)."""
-        for by_id, _by_content in reversed(self._generations):
-            if row_id in by_id:
-                return by_id[row_id]
-        rank, local = unpack_row_id(int(row_id))
-        return None if rank < 0 else self.recorder.ledger.row_digest(rank, local)
+        return resolve_row_id(self._generations, self.recorder.ledger, row_id)
 
     def _steps_of(self, seq: Any) -> set[int]:
         out = set()
@@ -415,13 +345,7 @@ class MartingaleRecorder:
             if rank is not None and id_rank != rank:
                 self.stats["foreign_rows"] += 1
             return self.sequence_digest(row_id)
-        for _by_id, by_content in reversed(self._generations):
-            lst = by_content.get(key)
-            if lst:
-                digest = lst.pop(0)
-                lst.append(digest)
-                return digest
-        return None
+        return next_by_content(self._generations, key)
 
     def on_scores(self, input_ids: torch.Tensor, attention_mask: torch.Tensor, logits_to_keep: int,
                   per_token_logps: torch.Tensor, trainer: Any, row_ids: torch.Tensor | None = None) -> int:
@@ -528,6 +452,7 @@ def __getattr__(name: str) -> Any:
     raise AttributeError(name)
 
 
-__all__ = ["AmbiguousOrigin", "MartingaleRecorder", "MartingaleGRPOMixin", "OriginNotFound", "apply_sampler_overrides",
-           "build_trainer_class", "check_sampler_overrides", "sampler_from_trainer"]
+__all__ = ["KEEP_GENERATIONS", "ROW_ID_KEY", "ROW_ID_RANK_BITS", "AmbiguousOrigin", "MartingaleRecorder",
+           "MartingaleGRPOMixin", "OriginNotFound", "apply_sampler_overrides", "build_trainer_class",
+           "check_sampler_overrides", "pack_row_id", "sampler_from_trainer", "unpack_row_id"]
 # MartingaleGRPOTrainer is served lazily by __getattr__ (it needs TRL).

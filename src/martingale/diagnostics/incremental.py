@@ -115,6 +115,7 @@ class StepDiagnosis:
     span_fraction: float                     # fraction of new sequences spanning > 2 revisions
     n_negative_lag: int
     unscored_new_sequences: int
+    lag0_score_steps: list[int] = field(default_factory=list)  # revision steps scored at lag 0 in this update
     by_provenance: dict[str, list[dict]] = field(default_factory=dict)             # this step only, per provenance
     cumulative_by_provenance: dict[str, list[dict]] = field(default_factory=dict)
     floor_withheld: str | None = None        # why the lag-0 floor is not read (comparability.py); None = it is
@@ -203,6 +204,7 @@ class IncrementalDiagnosis:
         n_new = 0
         n_negative = 0
         lag0_pairs: set[tuple[str, str]] = set()
+        lag0_score_steps: set[int] = set()
         for rid, sc in self._ledger.scores_since(self._score_rowid):
             self._score_rowid = rid
             n_new += 1
@@ -212,6 +214,8 @@ class IncrementalDiagnosis:
             b_step, _ = self._revision(tok.revision_digest)
             t_step, _ = self._revision(sc.train_revision_digest)
             lag = t_step - b_step
+            if lag == 0:
+                lag0_score_steps.add(t_step)
             if lag < 0:
                 n_negative += 1
             elif lag == 0:
@@ -235,6 +239,7 @@ class IncrementalDiagnosis:
             attribution=attribute(partial), floor_mean_abs=floor, new_weights_digests=weights,
             span_fraction=(spanning / len(new_seqs)) if new_seqs else 0.0, n_negative_lag=n_negative,
             unscored_new_sequences=len(self._unscored),
+            lag0_score_steps=sorted(lag0_score_steps),
             by_provenance=self._by_provenance(step_prov), cumulative_by_provenance=self._by_provenance(self._cumulative_prov),
             floor_withheld=withheld, floor_caveat=caveat,
         )
