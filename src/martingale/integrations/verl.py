@@ -9,15 +9,24 @@ import math
 from collections.abc import Callable, Mapping
 from typing import Any
 
+from martingale.integrations._common import (
+    KEEP_GENERATIONS,
+    ROW_ID_KEY,
+    ContentKey,
+    Generation,
+    _check_digestable,
+    _prefix_lengths,
+    _tokenizer_bytes,
+    next_by_content,
+    pack_row_id,
+    resolve_row_id,
+)
 from martingale.integrations._trl_callback import MartingaleMonitor
-from martingale.integrations.trl import _check_digestable, _prefix_lengths, _tokenizer_bytes
 from martingale.prod.revision_publisher import RevisionPublisher
 from martingale.record import Recorder, SamplerConfig, weights_digest
 from martingale.record.revision import LLMRevision, tokenizer_digest
 
-ROW_ID_KEY = "martingale_row_id"
 LENGTH_KEY = "martingale_completion_length"
-KEEP_GENERATIONS = 2
 __all__ = ["MartingaleVerlRecorder", "MartingaleMonitor", "wrap_ppo_loss", "MartingaleVeRLCallback"]
 
 
@@ -27,6 +36,10 @@ class MartingaleVerlRecorder:
     Call on_rollout before correction changes response_mask. Call on_train_step
     from every actor loss invocation, with the log-probs used for that loss.
     `step` must identify each optimizer weight version, including PPO mini-batches.
+
+    Row ids follow the TRL adapter's contract (``martingale.integrations._common``): an id packs
+    the rollout's ``actor_id`` with that rank's counter and is bound in the ledger's row-id table,
+    so a worker process with its own recorder over the same workspace resolves it there.
     """
 
     def __init__(self, workspace: str, tokenizer: Any, *, logprob_dtype: str = "f32",
@@ -39,13 +52,9 @@ class MartingaleVerlRecorder:
         self._record_scores = record_scores
         self._weights: dict[int, str] = {}
         self._revisions: dict[tuple[int, str], LLMRevision] = {}
-        self._next_id = 0
-        self._generations: list[tuple[dict[int, str], dict[tuple, list[str]]]] = []
-        self._cross_content_next: dict[tuple, int] = {}
-        for seq in self.recorder.ledger.all_sequences():
-            suffix = seq.sequence_id.rpartition("/row")[2]
-            if suffix.isdecimal():
-                self._next_id = max(self._next_id, int(suffix) + 1)
+        self._next_local: dict[int, int] = {}     # per rank; seeded from the ledger on first use
+        self._generations: list[Generation] = []
+        self._cross_content_next: dict[ContentKey, int] = {}
         self.stats: dict[str, int] = {"generation_calls": 0, "sequences": 0, "tokens": 0,
                                       "score_calls": 0, "scored_tokens": 0, "scored_sequences": 0,
                                       "unmatched_rows": 0, "nan_rows": 0, "duplicate_scores": 0,
@@ -69,6 +78,14 @@ class MartingaleVerlRecorder:
         self.stats["revisions"] += 1
         return rev
 
+    def _allocate(self, rank: int, n: int) -> list[int]:
+        """The next ``n`` local ids of ``rank``, continuing any ids already bound in the workspace."""
+        start = self._next_local.get(rank)
+        if start is None:
+            start = self.recorder.ledger.next_row_local_id(rank)
+        self._next_local[rank] = start + n
+        return list(range(start, start + n))
+
     @staticmethod
     def _tensor_batch(batch: Any) -> Any:
         return batch.batch if hasattr(batch, "batch") else batch
@@ -90,10 +107,11 @@ class MartingaleVerlRecorder:
             raise ValueError("rollout_log_probs must match responses")
         rev = self._revision(int(step), weights, "engine_sampling")
         n = response.shape[0]
-        ids = list(range(self._next_id, self._next_id + n))
-        self._next_id += n
+        local_ids = self._allocate(actor_id, n)
+        row_ids = [pack_row_id(actor_id, i) for i in local_ids]
         by_id: dict[int, str] = {}
-        by_content: dict[tuple, list[str]] = {}
+        by_content: dict[ContentKey, list[str]] = {}
+        bound: list[tuple[int, int, str]] = []
         lp = data["rollout_log_probs"].detach().to("cpu").tolist()
         advantages = data.get("advantages")
         self.stats["generation_calls"] += 1
@@ -106,42 +124,42 @@ class MartingaleVerlRecorder:
                 self.stats["nan_rows"] += 1
                 continue
             prompt_ids = [int(x) for x in prompt[row, prompt.shape[1] - plen[row]:].tolist()]
-            with self.recorder.sequence(actor_id, f"step{step}/row{ids[row]}", prompt_ids) as seq:
+            with self.recorder.sequence(actor_id, f"step{step}/row{local_ids[row]}", prompt_ids) as seq:
                 for token, prob in zip(tokens, probs):
                     seq.token(rev.digest, token, prob, dtype=self._dtype)
                 if advantages is not None:
                     adv = advantages[row]
                     seq.reward(float(adv[0] if adv.ndim else adv), dtype=self._dtype)
             digest = seq.record.digest
-            by_id[ids[row]] = digest
+            by_id[row_ids[row]] = digest
+            bound.append((actor_id, local_ids[row], digest))
             by_content.setdefault((tuple(prompt_ids), tuple(tokens)), []).append(digest)
             self.stats["sequences"] += 1
             self.stats["tokens"] += len(tokens)
-        data[ROW_ID_KEY] = torch.tensor(ids, dtype=torch.int64, device=response.device)
+        self.recorder.ledger.bind_row_ids(bound)
+        data[ROW_ID_KEY] = torch.tensor(row_ids, dtype=torch.int64, device=response.device)
         data[LENGTH_KEY] = torch.tensor(clen, dtype=torch.int64, device=response.device)
         self._generations.append((by_id, by_content))
         del self._generations[:-KEEP_GENERATIONS]
         return batch
 
-    def _lookup(self, row_id: int | None, key: tuple) -> str | None:
-        for by_id, by_content in reversed(self._generations):
-            if row_id is not None:
-                if row_id in by_id:
-                    return by_id[row_id]
-                continue
-            candidates = by_content.get(key)
-            if candidates:
-                digest = candidates.pop(0)
-                candidates.append(digest)
-                return digest
-        # A Ray actor can open the driver's workspace in a separate process.
-        # The ledger is authoritative when the in-memory generation map is absent.
+    def sequence_digest(self, row_id: int) -> str | None:
+        """The recorded sequence behind a ``martingale_row_id``: the kept maps, then the ledger's
+        row-id table (any rank, any age; a Ray worker opens the driver's workspace in a separate
+        process with empty maps)."""
+        return resolve_row_id(self._generations, self.recorder.ledger, row_id)
+
+    def _lookup(self, row_id: int | None, key: ContentKey) -> str | None:
+        """Row id first, exact (``sequence_digest``). Without an id, content: the kept maps, then a
+        scan of the ledger's sequences for a worker that has no maps."""
+        if row_id is not None:
+            return self.sequence_digest(row_id)
+        digest = next_by_content(self._generations, key)
+        if digest is not None:
+            return digest
         matches = []
         for seq in self.recorder.ledger.all_sequences():
-            if row_id is not None:
-                if seq.sequence_id.endswith(f"/row{row_id}"):
-                    return seq.digest
-            elif seq.prompt_ids is not None and (
+            if seq.prompt_ids is not None and (
                 tuple(seq.prompt_ids), tuple(t.token_id for t in seq.tokens)
             ) == key:
                 matches.append(seq.digest)

@@ -323,6 +323,15 @@ class TokenLedger:
             return None
         return None if row is None else row[0]
 
+    def next_row_local_id(self, rank: int) -> int:
+        """One past the highest local id bound for ``rank`` (0 for none, or a record without the table),
+        so a recorder reopening a workspace continues that rank's counter instead of rebinding its ids."""
+        try:
+            row = self._con.execute("SELECT MAX(local_id) FROM row_ids WHERE rank=?", (int(rank),)).fetchone()
+        except sqlite3.OperationalError:
+            return 0
+        return 0 if row is None or row[0] is None else int(row[0]) + 1
+
     def count_replayed_sequences(self) -> int:
         try:
             return self._con.execute(

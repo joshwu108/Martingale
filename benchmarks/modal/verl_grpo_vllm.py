@@ -131,7 +131,7 @@ def make_task_runner():
 
             from checker.verify_tokens import verify_export
             from martingale.diagnostics import AlarmConfig, decompose, render_markdown
-            from martingale.integrations.trl import _tokenizer_bytes
+            from martingale.integrations._common import _tokenizer_bytes
             from martingale.integrations.verl import MartingaleMonitor, MartingaleVerlRecorder
             from martingale.record.revision import tokenizer_digest
 

@@ -327,23 +327,28 @@ was off by nats on a tail row, which the doctor reports and does not judge.
 Reservoir's `mix_distributed` gathers every rank's generation slice to rank 0, replaces
 dead rows there, and scatters the rewritten slices back; a replayed row therefore reaches
 the loss on a rank other than the one whose recorder registered it. The Martingale side
-of that is in `MartingaleRecorder` (`tests/test_distributed_rows.py` plays it out with two
-fake ranks over one workspace):
+of that is the row-id contract in `martingale.integrations._common`, which both adapters use:
+`MartingaleRecorder` (TRL) and `MartingaleVerlRecorder` (verl).
+`tests/test_distributed_rows.py` and `tests/test_verl_distributed_rows.py` play it out
+with two fake ranks over one workspace:
 
 - **A row id names its rank.** `martingale_row_id = rank << 40 | local`, with
-  `pack_row_id(rank, local)` / `unpack_row_id(row_id)` in `martingale.integrations.trl`;
-  the rank is the trainer's `accelerator.process_index` and the local counter is the
-  recorder's own. Rank 0 ids are the plain counter, so single-process records are
-  unchanged. `-1` stays the skip sentinel.
+  `pack_row_id(rank, local)` / `unpack_row_id(row_id)` in `martingale.integrations._common`
+  (also importable from `martingale.integrations.trl`). The rank is the TRL trainer's
+  `accelerator.process_index`, or `on_rollout(actor_id=...)` in verl; the local counter is the
+  recorder's own (a verl recorder reopening the workspace continues it from the table).
+  Rank 0 ids are the plain counter, so single-process records are unchanged. `-1` stays
+  the skip sentinel.
 - **Every rank shares one workspace.** All ranks open the same `tokens.db` path (one node,
   or a filesystem every rank sees); each rank is its own actor chain (`actor_id = rank`)
   and SQLite serialises the writers (30 s busy timeout). Every id a rank allocates, fresh
   or replayed, is bound to its sequence digest in the ledger's `row_ids` table,
   bookkeeping outside the record: not exported, not digested, not checked, kept when
   `tokens.db` is copied, created on first write so reading an old record never rewrites it.
-- **A rank resolves any id through the ledger.** `on_scores` looks a row id up in its own
-  maps, then in the table (any rank, any age); ids from another rank are counted in
-  `stats["foreign_rows"]`. With separate workspaces per rank a foreign id cannot be
+- **A rank resolves any id through the ledger.** `on_scores` (TRL) and `on_train_step`
+  (verl) look a row id up in their own maps, then in the table (any rank, any age, any
+  process: verl's actor worker scores with its own recorder); TRL counts ids from another
+  rank in `stats["foreign_rows"]`. With separate workspaces per rank a foreign id cannot be
   resolved: it counts as `unmatched_rows` and the `unmatched` alarm fires, instead of the
   row being scored against the wrong sequence.
 - **The owner registers, the record resolves the origin.** Rank 0 calls
@@ -356,4 +361,7 @@ What Reservoir must do, and nothing more: carry `martingale_row_id` through
 does: a 1-D per-row tensor is copied, never renumbered); register on the owner rank with
 the owner's flight recorder; and launch every rank with the same workspace path. Ranks
 that disagree on `global_step` are already refused by `mix_distributed`. A real
-multi-GPU run of this path has not happened; the evidence is the two-rank fake.
+multi-GPU run of this path has not happened; the evidence is the two-rank fakes. verl
+has no replay buffer hook (`register_replayed` is TRL only); its single-GPU real run
+resolved ids driver-to-worker across processes, but through the label scan this table
+replaced (docs/verl-integration-notes.md).
