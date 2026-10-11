@@ -175,6 +175,31 @@ def test_fake_fit_records_every_lag_and_verifies(tmp_path, no_verl):
     assert report["ok"], report["errors"]
 
 
+def test_skipped_optimizer_update_does_not_publish_weight_version(tmp_path, no_verl):
+    trainer, worker, hooks, driver, dhooks, _ = build(tmp_path, [float("inf"), 1.0, 1.0, 1.0])
+    counted_step = worker.engine.optimizer_step
+    calls = 0
+
+    def inspect_first_step():
+        nonlocal calls
+        result = counted_step()
+        calls += 1
+        if calls == 1:
+            assert hooks.status()["applied_steps"] == 0
+            assert {r.step for r in driver.recorder.ledger.all_revisions()} == {0}
+        return result
+
+    worker.engine.optimizer_step = inspect_first_step
+    trainer.fit(1, Tracking())
+    revisions = list(driver.recorder.ledger.all_revisions())
+    assert hooks.status()["skipped_steps"] == 1
+    assert hooks.status()["applied_steps"] == 3
+    assert {r.step for r in revisions} == {0, 1, 2}
+    assert calls == 4
+    assert dhooks.updates[0]["applied_steps"] == 3
+    hooks.close()
+
+
 def test_lost_row_ids_and_detached_logps_fail_their_checks(tmp_path, no_verl):
     trainer, worker, hooks, driver, dhooks, _ = build(tmp_path, [1.0] * 4)
     installed = trainer._update_actor

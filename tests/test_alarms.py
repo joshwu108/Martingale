@@ -12,11 +12,12 @@ TOK = "f" * 64
 CFG = AlarmConfig(min_floor_tokens=2)
 
 
-def _diag(step, by_lag=(), floor=None, weights=(), span=0.0, neg=0, n_seq=1):
+def _diag(step, by_lag=(), floor=None, weights=(), span=0.0, neg=0, n_seq=1, score_steps=()):
     return StepDiagnosis(step=step, n_new_scores=sum(b["n_tokens"] for b in by_lag), n_new_sequences=n_seq,
                          by_lag=list(by_lag), cumulative_by_lag=[], attribution={"float_informational": {}},
                          floor_mean_abs=None if floor is None else Fraction(floor), new_weights_digests=list(weights),
-                         span_fraction=span, n_negative_lag=neg, unscored_new_sequences=0)
+                         span_fraction=span, n_negative_lag=neg, unscored_new_sequences=0,
+                         lag0_score_steps=list(score_steps))
 
 
 def _bucket(lag, n, ess_fraction, p50=1.0, n_conf=0):
@@ -49,6 +50,17 @@ class TestAlarms:
         assert [x.kind for x in a] == ["floor_jump"] and a[0].level == "warn"
         a = evaluate(_diag(5, [_bucket(0, 10, 1.0, p50=1.0007)], floor=1e-4, weights=["c" * 64]), h, CFG)   # 50x, no confident disagreement
         assert [x.kind for x in a] == ["floor_tail"] and a[0].level == "warn" and "no confident disagreements" in a[0].message
+
+    def test_floor_warning_names_score_revision_and_uses_exact_boundary(self):
+        h = AlarmHistory(floors=[Fraction(1, 10**6)])
+        assert evaluate(_diag(7, [_bucket(0, 32, 1.0)], floor=Fraction(3, 10**6),
+                              score_steps=[4]), h, CFG) == []
+        a = evaluate(_diag(11, [_bucket(0, 32, 1.0)], floor=Fraction(4, 10**6),
+                           score_steps=[7]), AlarmHistory(floors=[Fraction(1, 10**6)]), CFG)
+        assert [x.kind for x in a] == ["floor_jump"]
+        assert a[0].evidence["lag0_score_steps"] == [7]
+        assert a[0].evidence["monitor_step"] == 11
+        assert "after the optimizer update" in a[0].message
 
     def test_confident_disagreement_is_the_stale_server_verdict(self):
         """The real-run case: median ratio at 1, but tokens the engine was sure of score nats lower."""

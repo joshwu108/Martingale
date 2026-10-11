@@ -140,6 +140,19 @@ class TestAttribution:
 
 
 class TestTailVersusShift:
+    def test_small_floor_with_a_larger_token_gap_gets_investigation_hint(self, tmp_path):
+        rec = Recorder(tmp_path / "ws")
+        r = rec.publish_revision("1" * 64, TOK, S, step=0)
+        with rec.sequence(0, "a", [1]) as a:
+            for i in range(40):
+                a.token(r.digest, i, -0.1)
+        lps = [-0.1] * 40
+        lps[3] = -0.12
+        rec.score(a.record.digest, r.digest, lps)
+        lines = diagnosis(decompose(rec.ledger))
+        assert any("largest token gap" in line and "0 confident disagreements" in line
+                   and "revision steps" in line for line in lines)
+
     def test_tail_dominated_floor_is_named_as_numerics(self, tmp_path):
         from martingale.diagnostics.staleness import tail_dominated
         rec = Recorder(tmp_path / "ws")
