@@ -385,7 +385,7 @@ def diagnosis(d: dict, eps: float = 0.2) -> list[str]:
             if f["staleness_share"] > 0.5:
                 lines.append("Staleness dominates: lower num_iterations / the async level, or use a correction that is "
                              "unbiased at the sequence level (see martingale.exact).")
-        if f["floor"] > 1e-2:
+        if Fraction(a["floor_mean_abs_log_ratio"]) > Fraction(1, 100):
             lag0 = d["lag0_floor"]["float_informational"]
             n_conf = d["lag0_floor"].get("n_confident_disagreements", 0)
             if n_conf:
@@ -404,6 +404,13 @@ def diagnosis(d: dict, eps: float = 0.2) -> list[str]:
                              f"{lag0['ratio_p50']:.4f}: the engine and the trainer disagree on ordinary tokens. "
                              "Check dtype, sampler settings, and whether the engine's weights were actually updated "
                              "(stale server).")
+        elif d.get("lag0_floor") and Fraction(d["lag0_floor"]["max_abs_log_ratio"]) > Fraction(1, 1000):
+            lag0 = d["lag0_floor"]
+            lines.append(f"The lag-0 floor is small in absolute terms ({f['floor']:.2e}), but its largest token "
+                         f"gap is {float(Fraction(lag0['max_abs_log_ratio'])):.3g} nats. "
+                         f"There are {lag0.get('n_confident_disagreements', 0)} confident disagreements. "
+                         "Inspect the tokens and their generation/score revision steps before attributing a "
+                         "relative floor-jump alarm to tail numerics, a weight boundary, or the adapter.")
     for b in d["by_lag"]:
         fi = b["float_informational"]
         if b["lag"] > 0 and fi["ess_fraction"] < 0.5:

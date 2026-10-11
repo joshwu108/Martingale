@@ -16,8 +16,8 @@ checked. Two alarms are deliberately distinct:
                      and the median ratio stayed at 1 the whole time (a
                      near-deterministic task agrees on most tokens whatever
                      the weights), so a median-based proxy was wrong.
-  floor_tail         the floor jumped with no confident disagreement: a few
-                     low-probability tokens disagree by nats (bf16 tails).
+  floor_tail         a large relative floor jump after a generation with no
+                     confident disagreement; inspect the actual token gaps.
 """
 from __future__ import annotations
 
@@ -54,11 +54,11 @@ class Alarm:
 
 @dataclass
 class AlarmHistory:
-    floors: list[float] = field(default_factory=list)
+    floors: list[Fraction] = field(default_factory=list)
     last_generation_weights: str | None = None
     last_generation_step: int | None = None
 
-    def trailing_floor_median(self) -> float | None:
+    def trailing_floor_median(self) -> Fraction | None:
         return median(self.floors) if self.floors else None
 
 
@@ -67,8 +67,8 @@ def evaluate(diag: StepDiagnosis, history: AlarmHistory, cfg: AlarmConfig = Alar
     """Evaluate every alarm for one step and advance the history. Returns alarms, possibly empty."""
     alarms: list[Alarm] = []
     lag0 = next((b for b in diag.by_lag if b["lag"] == 0), None)
-    floor: float = float(diag.floor_mean_abs) if diag.floor_mean_abs is not None else -1.0
-    floor_ok = floor >= 0 and lag0 is not None and lag0["n_tokens"] >= cfg.min_floor_tokens
+    floor = diag.floor_mean_abs
+    floor_ok = floor is not None and floor >= 0 and lag0 is not None and lag0["n_tokens"] >= cfg.min_floor_tokens
     med = history.trailing_floor_median()
     new_generation = bool(diag.new_weights_digests)
 
@@ -99,24 +99,28 @@ def evaluate(diag: StepDiagnosis, history: AlarmHistory, cfg: AlarmConfig = Alar
                             "trainer: the engine generated from different weights than the trainer scored with "
                             "(weight sync not applied?) or from a different input. Verify with `martingale recompute` "
                             "against the trainer's checkpoint.",
-                            {"n_confident_disagreements": n_conf, "floor": floor}))
+                            {"n_confident_disagreements": n_conf, "floor": None if floor is None else float(floor)}))
 
     # floor jump: tail numerics or an engine config change (never alone a stale-server verdict)
-    if floor_ok and med is not None and med > 0:
+    if floor_ok and floor is not None and med is not None and med > 0:
         ratio = floor / med
         p50 = lag0["float_informational"]["ratio_p50"] if lag0 is not None else 1.0
-        if new_generation and ratio > cfg.stale_server_factor and n_conf < cfg.confident_min_tokens:
+        score_steps = diag.lag0_score_steps
+        context = (f" Lag-0 scores used revision step(s) {score_steps}; alarm step {diag.step} is after "
+                   "the optimizer update.") if score_steps else ""
+        evidence = {"floor": float(floor), "trailing_median": float(med), "factor": float(ratio),
+                    "lag0_score_steps": score_steps, "monitor_step": diag.step}
+        if new_generation and ratio > Fraction(str(cfg.stale_server_factor)) and n_conf < cfg.confident_min_tokens:
             alarms.append(Alarm("floor_tail", "warn", diag.step,
-                                f"lag-0 floor jumped {ratio:.1f}x after a new generation with the median ratio at "
-                                f"{p50:.4f} and no confident disagreements: low-probability tokens disagree by nats "
-                                "(bf16-vs-fp32 tail effect, worse at temperature 1 and as the policy sharpens). "
-                                "Consider FP16, a bit-exact engine, or masking tail ratios.",
-                                {"floor": floor, "trailing_median": med, "factor": ratio, "ratio_p50": p50}))
-        elif ratio > cfg.floor_jump_factor and n_conf < cfg.confident_min_tokens:
+                                f"lag-0 floor jumped {float(ratio):.1f}x after a new generation with the median ratio at "
+                                f"{p50:.4f} and no confident disagreements. Inspect the token gaps: a small "
+                                f"baseline can make a modest absolute change look large.{context}",
+                                {**evidence, "ratio_p50": p50}))
+        elif ratio > Fraction(str(cfg.floor_jump_factor)) and n_conf < cfg.confident_min_tokens:
             alarms.append(Alarm("floor_jump", "warn", diag.step,
-                                f"lag-0 floor is {ratio:.1f}x its trailing median ({floor:.2e} vs {med:.2e}): engine "
-                                "config, dtype or server settings may have changed",
-                                {"floor": floor, "trailing_median": med, "factor": ratio}))
+                                f"lag-0 floor is {float(ratio):.1f}x its trailing median "
+                                f"({float(floor):.2e} vs {float(med):.2e}). Inspect token gaps and revision steps "
+                                f"before attributing a cause.{context}", evidence))
 
     # ESS collapse per lag bucket
     total = sum(b["n_tokens"] for b in diag.by_lag) or 1
@@ -150,7 +154,7 @@ def evaluate(diag: StepDiagnosis, history: AlarmHistory, cfg: AlarmConfig = Alar
                             "is incomplete (adapter lost row ids)", {"unmatched": unmatched_rows, "seen": seen}))
 
     # advance history
-    if floor_ok:
+    if floor_ok and floor is not None:
         history.floors.append(floor)
         del history.floors[:-cfg.floor_window]
     if new_generation:
