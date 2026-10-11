@@ -342,7 +342,9 @@ def adapter_checks(*, rollouts: list[dict], updates: list[dict], worker: dict, r
     """One verdict per adapter assumption, from the hooks' audit and the record."""
     by_step: dict[int, dict[str, str]] = {}
     for rev in revisions:
-        by_step.setdefault(int(rev["step"]), {})[rev["sampler"]["logprobs_mode"]] = rev["weights_digest"]
+        sampler = rev["sampler"]            # records before 2026-10-10 carried the source in logprobs_mode
+        source = sampler.get("logprobs_source") or sampler["logprobs_mode"]
+        by_step.setdefault(int(rev["step"]), {})[source] = rev["weights_digest"]
     paired = {s: d for s, d in by_step.items() if {"engine_sampling", "trainer_scores"} <= d.keys()}
     loss = worker.get("loss", {})
     stats = worker.get("stats", {})

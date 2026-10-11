@@ -72,7 +72,7 @@ class TestGeneration:
         tr = FakeTrainer(use_vllm=True)
         flight.on_generation(make_output(with_old=True, with_sampling=True), tr)
         rev = next(flight.recorder.ledger.all_revisions())
-        assert rev.sampler.logprobs_mode == "engine_sampling" and rev.sampler.engine == "vllm:server"
+        assert rev.sampler.logprobs_source == "engine_sampling" and rev.sampler.engine == "vllm:server"
         seq = next(flight.recorder.ledger.all_sequences())
         assert bits_to_fraction(seq.tokens[0].logprob_bits) == bits_to_fraction(
             __import__("martingale.record", fromlist=["float_bits"]).float_bits(-1.1))
@@ -81,7 +81,7 @@ class TestGeneration:
         tr = FakeTrainer()
         flight.on_generation(make_output(with_old=False), tr)
         assert tr.recompute_calls == 1
-        assert next(flight.recorder.ledger.all_revisions()).sampler.logprobs_mode == "trainer_recompute"
+        assert next(flight.recorder.ledger.all_revisions()).sampler.logprobs_source == "trainer_recompute"
 
     def test_one_weights_digest_per_step(self, flight):
         tr = FakeTrainer()
@@ -95,6 +95,56 @@ class TestGeneration:
     def test_sampler_from_trainer(self):
         s = sampler_from_trainer(FakeTrainer(), "x")
         assert s.temperature == 0.9 and s.max_tokens == 8 and s.engine == "transformers" and s.dtype == "float32"
+
+
+class TestLogprobsMode:
+    """2026-10-10: the revision binds vLLM's logprobs_mode and whether the bits are temperature-scaled.
+    TRL 1.13.0 pins processed_logprobs (vllm_generation.py:361, vllm_serve.py:265) and divides the
+    trainer's logits by the temperature (grpo_trainer.py:1543)."""
+
+    def test_vllm_engine_bits_bind_processed_logprobs_and_temperature_applied(self, flight):
+        tr = FakeTrainer(use_vllm=True)
+        flight.on_generation(make_output(with_old=True, with_sampling=True), tr)
+        s = next(flight.recorder.ledger.all_revisions()).sampler
+        assert s.logprobs_mode == "processed_logprobs" and s.temperature_applied is True
+        assert s.logprobs_source == "engine_sampling" and s.temperature == 0.9
+
+    @pytest.mark.parametrize("with_old,source", [(True, "trainer_old_logps"), (False, "trainer_recompute")])
+    def test_trainer_side_bits_have_no_engine_mode_but_are_temperature_scaled(self, flight, with_old, source):
+        flight.on_generation(make_output(with_old=with_old), FakeTrainer())
+        s = next(flight.recorder.ledger.all_revisions()).sampler
+        assert s.logprobs_source == source and s.logprobs_mode is None and s.temperature_applied is True
+
+    def test_score_revision_is_temperature_scaled_and_distinct_from_behavior_revision(self, flight):
+        tr = FakeTrainer(use_vllm=True)
+        out = flight.on_generation(make_output(with_sampling=True), tr)
+        ids = torch.cat([out["prompt_ids"], out["completion_ids"]], dim=1)
+        am = torch.cat([out["prompt_mask"], out["completion_mask"]], dim=1)
+        flight.on_scores(ids, am, 3, torch.zeros(2, 3), tr, row_ids=out["martingale_row_id"])
+        revs = {r.sampler.logprobs_source: r for r in flight.recorder.ledger.all_revisions()}
+        assert set(revs) == {"engine_sampling", "trainer_scores"}
+        assert revs["trainer_scores"].sampler.temperature_applied is True
+        assert revs["trainer_scores"].sampler.logprobs_mode is None
+        assert revs["trainer_scores"].digest != revs["engine_sampling"].digest        # the mode is in the digest
+
+    def test_hand_launched_raw_server_is_declared_by_override_and_withholds_the_floor(self, tmp_path):
+        flight = MartingaleRecorder(tmp_path / "ws", tokenizer=b"t", sampler_overrides={"logprobs_mode": "raw_logprobs"})
+        tr = FakeTrainer(use_vllm=True)
+        out = flight.on_generation(make_output(with_sampling=True), tr)
+        ids = torch.cat([out["prompt_ids"], out["completion_ids"]], dim=1)
+        am = torch.cat([out["prompt_mask"], out["completion_mask"]], dim=1)
+        flight.on_scores(ids, am, 3, torch.zeros(2, 3), tr, row_ids=out["martingale_row_id"])
+        revs = {r.sampler.logprobs_source: r.sampler for r in flight.recorder.ledger.all_revisions()}
+        assert revs["engine_sampling"].temperature_applied is False          # re-derived from the overridden mode
+        assert revs["trainer_scores"].temperature_applied is True and revs["trainer_scores"].logprobs_mode is None
+        d = decompose(flight.recorder.ledger)
+        assert d["lag0_floor"] is None and "temperature 0.9" in d["lag0_floor_withheld"]["reason"]
+
+    def test_overrides_cannot_relabel_the_source_or_add_unknown_keys(self, tmp_path):
+        with pytest.raises(ValueError, match="logprobs_source"):
+            MartingaleRecorder(tmp_path / "a", tokenizer=b"t", sampler_overrides={"logprobs_source": "engine_sampling"})
+        with pytest.raises(ValueError, match="unknown sampler keys"):
+            MartingaleRecorder(tmp_path / "b", tokenizer=b"t", sampler_overrides={"beam_width": 4})
 
 
 class TestScores:

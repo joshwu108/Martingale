@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from fractions import Fraction
 from typing import Iterable
 
+from martingale.diagnostics.comparability import lag0_verdict
 from martingale.record.bits import bits_to_fraction
 from martingale.record.store import TokenLedger
 
@@ -53,6 +54,8 @@ class ScoredToken:
     mixed_sequence: bool
     behavior_logprob: Fraction = Fraction(0)
     provenance: str = "fresh"     # "fresh" | "replayed" (SequenceRecord.provenance)
+    behavior_revision: str = ""   # revision digests, so lag-0 pairs can be checked for comparability
+    train_revision: str = ""
 
     @property
     def confident_disagreement(self) -> bool:
@@ -85,7 +88,8 @@ def scored_tokens(ledger: TokenLedger) -> Iterable[ScoredToken]:
                 behavior_step=step_of(tok.revision_digest), train_step=step_of(s.train_revision_digest),
                 log_ratio=bits_to_fraction(s.logprob_bits) - bits_to_fraction(tok.logprob_bits),
                 mixed_sequence=mixed, behavior_logprob=bits_to_fraction(tok.logprob_bits),
-                provenance=seq.provenance,
+                provenance=seq.provenance, behavior_revision=tok.revision_digest,
+                train_revision=s.train_revision_digest,
             )
 
 
@@ -165,15 +169,21 @@ def decompose(ledger: TokenLedger, eps: tuple[float, ...] = DEFAULT_EPS) -> dict
     `by_lag` covers every scored token; `by_provenance` repeats the buckets for fresh and for
     replayed rows (only the provenances present); `replayed` compares the buffer's declared
     sequence weights with what the trainer's scores measure (None without replayed rows).
+    `lag0_floor` is None and `lag0_floor_withheld` says why when the behavior and trainer
+    log-probs at lag 0 are known not to be the same function of the logits (comparability.py);
+    the lag-0 bucket stays in `by_lag`, because it is still what the loss saw.
     """
     buckets: dict[int, Bucket] = {}
     n_unscored_sequences = 0
     by_train_step: dict[int, Bucket] = {}
     by_prov: dict[str, dict[int, Bucket]] = {}
     n_negative_lag = 0
+    lag0_pairs: set[tuple[str, str]] = set()
     for t in scored_tokens(ledger):
         if t.lag < 0:
             n_negative_lag += 1
+        elif t.lag == 0:
+            lag0_pairs.add((t.behavior_revision, t.train_revision))
         buckets.setdefault(t.lag, Bucket(t.lag)).add(t)
         by_train_step.setdefault(t.train_step, Bucket(t.train_step)).add(t)
         by_prov.setdefault(t.provenance, {}).setdefault(t.lag, Bucket(t.lag)).add(t)
@@ -181,7 +191,9 @@ def decompose(ledger: TokenLedger, eps: tuple[float, ...] = DEFAULT_EPS) -> dict
     scored_seqs = {d for b in buckets.values() for d in b._seqs}
     n_unscored_sequences = n_sequences - len(scored_seqs)
     lags = sorted(buckets)
-    floor = buckets[0].summary(eps) if 0 in buckets else None
+    withheld, caveat = lag0_verdict((ledger.get_revision(b).sampler, ledger.get_revision(s).sampler)
+                                    for b, s in sorted(lag0_pairs))
+    floor = buckets[0].summary(eps) if 0 in buckets and withheld is None else None
     n_replayed = ledger.count_replayed_sequences()
     return {
         "n_sequences": n_sequences,
@@ -194,7 +206,9 @@ def decompose(ledger: TokenLedger, eps: tuple[float, ...] = DEFAULT_EPS) -> dict
         "by_lag": [buckets[lag].summary(eps) for lag in lags],
         "by_train_step": [{**by_train_step[s].summary(eps), "train_step": s, "lag": None} for s in sorted(by_train_step)],
         "lag0_floor": floor,
-        "by_provenance": _by_provenance(by_prov, eps),
+        "lag0_floor_withheld": None if withheld is None else {"reason": withheld, "n_tokens": buckets[0].n_tokens},
+        "lag0_floor_caveat": caveat,
+        "by_provenance": _by_provenance(by_prov, eps, withheld is not None),
         "replayed": replayed_weights(ledger) if n_replayed else None,
         "n_negative_lag_tokens": n_negative_lag,
         "eps": list(eps),
@@ -205,19 +219,22 @@ def decompose(ledger: TokenLedger, eps: tuple[float, ...] = DEFAULT_EPS) -> dict
             "memory is O(scored tokens): one float per token is kept for percentiles, plus four numbers per replayed sequence",
             "by_lag covers fresh and replayed rows together; by_provenance repeats the buckets per provenance, and a "
             "replayed bucket without lag-0 tokens borrows the fresh floor (floor_source says which)",
+            "lag0_floor is withheld (None, with lag0_floor_withheld saying why) when the record shows the behavior and "
+            "trainer log-probs at lag 0 differ in temperature scaling; the lag-0 bucket stays in by_lag",
         ],
     }
 
 
-def _by_provenance(by_prov: dict[str, dict[int, Bucket]], eps: tuple[float, ...]) -> dict:
-    """Per-provenance lag buckets with their own attribution; the replayed bucket borrows the fresh floor."""
+def _by_provenance(by_prov: dict[str, dict[int, Bucket]], eps: tuple[float, ...], withheld: bool = False) -> dict:
+    """Per-provenance lag buckets with their own attribution; the replayed bucket borrows the fresh floor.
+    A withheld floor is withheld for every provenance."""
     fresh = by_prov.get("fresh", {})
-    fresh_floor = Fraction(fresh[0].summary(eps)["mean_abs_log_ratio"]) if 0 in fresh else None
+    fresh_floor = Fraction(fresh[0].summary(eps)["mean_abs_log_ratio"]) if 0 in fresh and not withheld else None
     out: dict[str, dict] = {}
     for prov in sorted(by_prov):
         pb = by_prov[prov]
         by_lag = [pb[lag].summary(eps) for lag in sorted(pb)]
-        own = pb[0].summary(eps) if 0 in pb else None
+        own = pb[0].summary(eps) if 0 in pb and not withheld else None
         partial = {"by_lag": by_lag, "lag0_floor": own}
         if own is not None:
             attribution = attribute(partial)
@@ -373,10 +390,15 @@ def diagnosis(d: dict, eps: float = 0.2) -> list[str]:
     a = attribute(d)
     lines: list[str] = []
     f = a["float_informational"]
-    if f["floor"] is None:
+    withheld = d.get("lag0_floor_withheld")
+    if withheld is not None:
+        lines.append(f"{withheld['reason']} ({withheld['n_tokens']} lag-0 tokens not read as a floor).")
+    elif f["floor"] is None:
         lines.append("No lag-0 tokens: score at least one generation batch with the weights that produced it "
                      "(num_iterations=1 or steps_per_generation=1 for one step) to measure the engine floor.")
     else:
+        if d.get("lag0_floor_caveat"):
+            lines.append(d["lag0_floor_caveat"] + ".")
         if f["staleness_share"] is None:
             lines.append(f"Only lag-0 tokens so far (engine floor: mean |log r| = {f['floor']:.2e}); no stale tokens to attribute.")
         else:

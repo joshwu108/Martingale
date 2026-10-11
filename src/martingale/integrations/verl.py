@@ -2,6 +2,20 @@
 
 The recorder and monitor can be imported without verl. `wrap_ppo_loss` checks
 the pinned framework only when called inside a real worker.
+
+Sampler config: pass ``rollout_config`` (``config.actor_rollout_ref.rollout``,
+a DictConfig, the ``RolloutConfig`` dataclass or a plain dict) and the revision
+binds verl's real settings. ``logprobs_mode`` is ``rollout.logprobs_mode``,
+which verl 0.9.1 defaults to ``processed_logprobs`` (verl/workers/config/
+rollout.py:197, verl/trainer/config/rollout/rollout.yaml:93) and hands to the
+vLLM engine unchanged (verl/workers/rollout/vllm_rollout/vllm_async_server.py:338);
+``rollout_log_probs`` exist only with ``rollout.calculate_log_probs`` (rollout.py:219).
+The actor divides its logits by the rollout temperature before the log-softmax
+(verl/workers/engine/fsdp/transformer_impl.py:98-103 and 1159, legacy path
+verl/utils/torch_functional.py:679-681; the temperature comes from
+verl/trainer/ppo/ray_trainer.py:1331), so ``trainer_scores`` revisions carry
+``temperature_applied=True``. Without ``rollout_config`` the mode and the
+temperature are recorded as unknown and the doctor reports the floor as before.
 """
 from __future__ import annotations
 
@@ -17,17 +31,61 @@ from martingale.integrations._common import (
     _check_digestable,
     _prefix_lengths,
     _tokenizer_bytes,
+    apply_sampler_overrides,
+    check_sampler_overrides,
     next_by_content,
     pack_row_id,
     resolve_row_id,
 )
 from martingale.integrations._trl_callback import MartingaleMonitor
 from martingale.prod.revision_publisher import RevisionPublisher
-from martingale.record import Recorder, SamplerConfig, weights_digest
+from martingale.record import Recorder, SamplerConfig, temperature_applied_for, weights_digest
 from martingale.record.revision import LLMRevision, tokenizer_digest
 
 LENGTH_KEY = "martingale_completion_length"
-__all__ = ["MartingaleVerlRecorder", "MartingaleMonitor", "wrap_ppo_loss", "MartingaleVeRLCallback"]
+ACTOR_TEMPERATURE_APPLIED = True   # verl 0.9.1 transformer_impl.py:98-103; torch_functional.py:679-681
+__all__ = ["MartingaleVerlRecorder", "MartingaleMonitor", "wrap_ppo_loss", "MartingaleVeRLCallback",
+           "sampler_from_rollout_config"]
+
+
+def _cfg(cfg: Any, key: str) -> Any:
+    """A field of a DictConfig, dataclass or dict; None when absent or missing-mandatory."""
+    if cfg is None:
+        return None
+    try:
+        return cfg.get(key) if isinstance(cfg, Mapping) else getattr(cfg, key, None)
+    except Exception:            # omegaconf raises on a '???' value
+        return None
+
+
+def _engine_version(name: Any) -> str | None:
+    try:
+        if name == "vllm":
+            import vllm
+            return str(vllm.__version__)
+        if name == "sglang":
+            import sglang
+            return str(sglang.__version__)
+    except Exception:
+        return None
+    return None
+
+
+def sampler_from_rollout_config(rollout_config: Any, logprobs_source: str) -> SamplerConfig:
+    """verl's rollout settings bound to where the bits came from. ``logprobs_mode`` is the engine's
+    mode for engine-produced bits and null for the actor's scores; ``temperature_applied`` follows the
+    mode for the engine and is True for the actor (module docstring has the verl source lines)."""
+    c = rollout_config
+    engine_mode = _cfg(c, "logprobs_mode") if logprobs_source == "engine_sampling" else None
+    applied = ACTOR_TEMPERATURE_APPLIED if logprobs_source == "trainer_scores" else temperature_applied_for(engine_mode)
+    name, seed = _cfg(c, "name"), _cfg(c, "seed")
+    return SamplerConfig(
+        temperature=_cfg(c, "temperature"), top_p=_cfg(c, "top_p"), top_k=_cfg(c, "top_k"),
+        max_tokens=_cfg(c, "response_length"), logprobs_mode=None if engine_mode is None else str(engine_mode),
+        dtype=_cfg(c, "dtype"), engine="verl" if name is None else f"verl:{name}", engine_version=_engine_version(name),
+        tensor_parallel=_cfg(c, "tensor_model_parallel_size"), seed_policy=None if seed is None else f"seed={seed}",
+        logprobs_source=logprobs_source, temperature_applied=applied,
+    )
 
 
 class MartingaleVerlRecorder:
@@ -43,12 +101,14 @@ class MartingaleVerlRecorder:
     """
 
     def __init__(self, workspace: str, tokenizer: Any, *, logprob_dtype: str = "f32",
-                 sampler_overrides: dict | None = None, record_scores: bool = True) -> None:
+                 sampler_overrides: dict | None = None, record_scores: bool = True,
+                 rollout_config: Any = None) -> None:
         self.recorder = Recorder(workspace)
         tok = _tokenizer_bytes(tokenizer)
         self._tok_digest = tok if isinstance(tok, str) else tokenizer_digest(tok)
         self._dtype = logprob_dtype
-        self._overrides = dict(sampler_overrides or {})
+        self._overrides = check_sampler_overrides(sampler_overrides or {})
+        self._rollout = rollout_config
         self._record_scores = record_scores
         self._weights: dict[int, str] = {}
         self._revisions: dict[tuple[int, str], LLMRevision] = {}
@@ -70,9 +130,7 @@ class MartingaleVerlRecorder:
             self._weights[step] = weights_digest(state)
             if len(self._weights) > 8:
                 self._weights.pop(min(self._weights))
-        sampler = SamplerConfig(engine="verl", logprobs_mode=mode)
-        if self._overrides:
-            sampler = SamplerConfig.from_dict({**sampler.to_dict(), **self._overrides})
+        sampler = apply_sampler_overrides(sampler_from_rollout_config(self._rollout, mode), self._overrides, mode)
         rev = self.recorder.publish_revision(self._weights[step], self._tok_digest, sampler, step=step)
         self._revisions[key] = rev
         self.stats["revisions"] += 1

@@ -8,7 +8,9 @@ recorder whose in-memory maps have rolled over) resolves it (docs/replay-provena
 """
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Mapping
+
+from martingale.record import SamplerConfig, temperature_applied_for
 
 if TYPE_CHECKING:
     import torch
@@ -20,6 +22,7 @@ KEEP_GENERATIONS = 2          # row maps kept for the last N generation batches
 ROW_ID_RANK_BITS = 40         # row id = rank << 40 | local counter; rank 0 ids are the plain counter
 _MAX_RANK = 1 << 23           # int64 leaves 23 bits for the rank
 _LOCAL_MASK = (1 << ROW_ID_RANK_BITS) - 1
+ENGINE_ONLY_OVERRIDES = frozenset({"logprobs_mode", "temperature_applied"})   # describe the engine's bits, not the trainer's
 
 ContentKey = tuple[tuple[int, ...], tuple[int, ...]]                      # (prompt ids, completion ids)
 Generation = tuple[dict[int, str], dict[ContentKey, list[str]]]           # (row id -> digest, content -> digests)
@@ -98,3 +101,26 @@ def _check_digestable(state_dict: dict) -> None:
             raise RuntimeError(
                 f"parameter {name!r} is sharded or on the meta device; the weights digest would be meaningless. "
                 "Gather the full state dict (FSDP/ZeRO-3) before recording.")
+
+
+def check_sampler_overrides(overrides: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate user overrides once, at construction: unknown keys and `logprobs_source` are refused
+    (the source is what the adapter observed; relabelling it would merge behavior and trainer revisions)."""
+    if "logprobs_source" in overrides:
+        raise ValueError("sampler_overrides cannot set logprobs_source; the adapter records where the bits came from")
+    SamplerConfig.from_dict(overrides)
+    return dict(overrides)
+
+
+def apply_sampler_overrides(sampler: SamplerConfig, overrides: Mapping[str, Any], logprobs_source: str) -> SamplerConfig:
+    """User overrides on top of what the adapter read. `logprobs_mode` and `temperature_applied` say what
+    the engine reported, so they are applied to engine-sourced revisions only; the trainer-side values
+    come from the framework's own code and an override must not make the two sides agree by accident.
+    An overridden `logprobs_mode` re-derives `temperature_applied` unless that is overridden too."""
+    if not overrides:
+        return sampler
+    skip = () if logprobs_source == "engine_sampling" else ENGINE_ONLY_OVERRIDES
+    merged = {**sampler.to_dict(), **{k: v for k, v in overrides.items() if k not in skip}}
+    if "logprobs_mode" in overrides and "temperature_applied" not in overrides and not skip:
+        merged["temperature_applied"] = temperature_applied_for(merged["logprobs_mode"])
+    return SamplerConfig.from_dict(merged)
