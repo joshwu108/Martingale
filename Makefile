@@ -11,11 +11,11 @@ release:
 	uv build
 	uv run --with twine twine check dist/*
 
-# Ensure checker/ imports nothing from src/
+# Ensure checker/ imports nothing from src/, and the verl adapter nothing from the TRL adapter
 check-imports:
-	@echo "=== Checking checker/ import isolation ==="
+	@echo "=== Checking import isolation (checker/, verl.py) ==="
 	@python3 scripts/check_imports.py
-	@echo "  checker import isolation: OK"
+	@echo "  import isolation: OK"
 
 test:
 	@echo "=== Running tests ==="
