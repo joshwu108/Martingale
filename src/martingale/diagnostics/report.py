@@ -10,7 +10,9 @@ def render_markdown(d: dict) -> str:
     lines += ["",
              f"sequences: {d['n_sequences']} (mixed-revision: {d['n_mixed_sequences']}, unscored: {d['n_unscored_sequences']}), "
              f"scored tokens: {d['n_scored_tokens']}", ""]
-    if d["lag0_floor"] is None:
+    if d.get("lag0_floor_withheld") is not None:
+        lines.append(d["lag0_floor_withheld"]["reason"] + ".")
+    elif d["lag0_floor"] is None:
         lines.append("No lag-0 tokens: the engine-mismatch floor cannot be measured in this run.")
     else:
         f = d["lag0_floor"]["float_informational"]

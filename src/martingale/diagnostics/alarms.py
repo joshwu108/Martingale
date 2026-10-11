@@ -18,6 +18,10 @@ checked. Two alarms are deliberately distinct:
                      the weights), so a median-based proxy was wrong.
   floor_tail         the floor jumped with no confident disagreement: a few
                      low-probability tokens disagree by nats (bf16 tails).
+  floor_withheld     the record says the behavior and trainer log-probs at
+                     lag 0 differ in temperature scaling (comparability.py):
+                     no floor is read, so stale_server, floor_jump and
+                     floor_tail cannot fire; reported once per run.
 """
 from __future__ import annotations
 
@@ -57,6 +61,7 @@ class AlarmHistory:
     floors: list[float] = field(default_factory=list)
     last_generation_weights: str | None = None
     last_generation_step: int | None = None
+    floor_withheld_reported: bool = False
 
     def trailing_floor_median(self) -> float | None:
         return median(self.floors) if self.floors else None
@@ -67,8 +72,13 @@ def evaluate(diag: StepDiagnosis, history: AlarmHistory, cfg: AlarmConfig = Alar
     """Evaluate every alarm for one step and advance the history. Returns alarms, possibly empty."""
     alarms: list[Alarm] = []
     lag0 = next((b for b in diag.by_lag if b["lag"] == 0), None)
-    floor: float = float(diag.floor_mean_abs) if diag.floor_mean_abs is not None else -1.0
+    withheld = diag.floor_withheld
+    floor: float = float(diag.floor_mean_abs) if diag.floor_mean_abs is not None and withheld is None else -1.0
     floor_ok = floor >= 0 and lag0 is not None and lag0["n_tokens"] >= cfg.min_floor_tokens
+    if withheld is not None and not history.floor_withheld_reported:
+        history.floor_withheld_reported = True
+        alarms.append(Alarm("floor_withheld", "warn", diag.step, withheld,
+                            {"n_lag0_tokens": 0 if lag0 is None else lag0["n_tokens"]}))
     med = history.trailing_floor_median()
     new_generation = bool(diag.new_weights_digests)
 
@@ -92,7 +102,8 @@ def evaluate(diag: StepDiagnosis, history: AlarmHistory, cfg: AlarmConfig = Alar
     # bf16 rounding cannot do that; different weights (sync did not apply) or different inputs can.
     # Found on the first real run (2026-10-06): TRL 1.13 colocate served the initial weights for
     # three generations while the trainer trained; the median ratio stayed at 1 the whole time.
-    n_conf = lag0.get("n_confident_disagreements", 0) if lag0 is not None else 0
+    # A withheld floor compares two different functions of the logits: no verdict from it.
+    n_conf = lag0.get("n_confident_disagreements", 0) if lag0 is not None and withheld is None else 0
     if n_conf >= cfg.confident_min_tokens:
         alarms.append(Alarm("stale_server", "error", diag.step,
                             f"{n_conf} lag-0 tokens the engine was >=50% sure of are scored >2 nats lower by the "

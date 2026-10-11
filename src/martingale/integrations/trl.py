@@ -17,7 +17,19 @@ per batch row. Behavior log-probs are, in order of preference, vLLM's
 ``sampling_per_token_logps`` (the engine that actually sampled), TRL's
 ``old_per_token_logps`` (a no-grad forward under the generating weights), or a
 no-grad forward made here. Which one was used is written into the revision's
-sampler config (``logprobs_mode``), because the three mean different things.
+sampler config (``logprobs_source``), because the three mean different things.
+``logprobs_mode`` is the engine's reporting mode and ``temperature_applied``
+whether the bits are log-softmax(logits / temperature): TRL 1.13.0 builds its
+colocate vLLM with ``logprobs_mode="processed_logprobs"`` (trl/generation/
+vllm_generation.py:361), its ``trl vllm-serve`` script passes the same flag
+(trl/scripts/vllm_serve.py:265), and the trainer divides its logits by the
+sampling temperature before the log-softmax (trl/trainer/grpo_trainer.py:1543),
+so both sides are temperature-scaled and the lag-0 floor is like for like at
+any temperature. In server mode the flag is TRL's, not an observation of the
+server: a server started by hand without ``--logprobs-mode processed_logprobs``
+returns raw log-probs (vLLM's default); say so with
+``sampler_overrides={"logprobs_mode": "raw_logprobs", "temperature_applied": False}``
+and the doctor withholds the floor instead of reading the temperature as mismatch.
 The revision is the digest of the trainer's weights at this ``global_step``
 plus tokenizer and sampler config (design.md 7). ``reward_bits`` holds TRL's
 advantage for the row, the value the loss consumes.
@@ -51,9 +63,9 @@ nothing from TRL; ``MartingaleGRPOTrainer`` is built on first access.
 from __future__ import annotations
 
 import functools
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Mapping
 
-from martingale.record import Recorder, SamplerConfig, weights_digest
+from martingale.record import Recorder, SamplerConfig, temperature_applied_for, weights_digest
 from martingale.record.bits import float_bits
 from martingale.record.replay import AmbiguousOrigin, OriginNotFound
 from martingale.record.revision import LLMRevision, tokenizer_digest
@@ -66,6 +78,12 @@ SAMPLING_LOGPROBS_KEY = "sampling_per_token_logps"
 OLD_LOGPROBS_KEY = "old_per_token_logps"
 ROW_ID_KEY = "martingale_row_id"
 KEEP_GENERATIONS = 2          # row maps kept for the last N generation batches
+TRL_VLLM_LOGPROBS_MODE = "processed_logprobs"   # TRL 1.13.0: vllm_generation.py:361 (colocate), vllm_serve.py:265 (server)
+TRAINER_SOURCES = frozenset({"trainer_old_logps", "trainer_recompute", "trainer_scores"})
+# TRL 1.13.0 grpo_trainer.py:1543 divides the logits by self.temperature before selective_log_softmax,
+# on the old-logps pass, the recompute made here and the loss path alike.
+TRAINER_TEMPERATURE_APPLIED = True
+ENGINE_ONLY_OVERRIDES = frozenset({"logprobs_mode", "temperature_applied"})   # describe the engine's bits, not the trainer's
 ROW_ID_RANK_BITS = 40         # row id = rank << 40 | local counter; rank 0 ids are the plain counter
 _MAX_RANK = 1 << 23           # int64 leaves 23 bits for the rank
 _LOCAL_MASK = (1 << ROW_ID_RANK_BITS) - 1
@@ -112,9 +130,39 @@ def _engine_version(use_vllm: bool) -> str | None:
         return None
 
 
-def sampler_from_trainer(trainer: Any, logprobs_mode: str) -> SamplerConfig:
+def check_sampler_overrides(overrides: Mapping[str, Any]) -> dict[str, Any]:
+    """Validate user overrides once, at construction: unknown keys and `logprobs_source` are refused
+    (the source is what the adapter observed; relabelling it would merge behavior and trainer revisions)."""
+    if "logprobs_source" in overrides:
+        raise ValueError("sampler_overrides cannot set logprobs_source; the adapter records where the bits came from")
+    SamplerConfig.from_dict(overrides)
+    return dict(overrides)
+
+
+def apply_sampler_overrides(sampler: SamplerConfig, overrides: Mapping[str, Any], logprobs_source: str) -> SamplerConfig:
+    """User overrides on top of what the adapter read. `logprobs_mode` and `temperature_applied` say what
+    the engine reported, so they are applied to engine-sourced revisions only; the trainer-side values
+    come from the framework's own code and an override must not make the two sides agree by accident.
+    An overridden `logprobs_mode` re-derives `temperature_applied` unless that is overridden too."""
+    if not overrides:
+        return sampler
+    skip = () if logprobs_source == "engine_sampling" else ENGINE_ONLY_OVERRIDES
+    merged = {**sampler.to_dict(), **{k: v for k, v in overrides.items() if k not in skip}}
+    if "logprobs_mode" in overrides and "temperature_applied" not in overrides and not skip:
+        merged["temperature_applied"] = temperature_applied_for(merged["logprobs_mode"])
+    return SamplerConfig.from_dict(merged)
+
+
+def sampler_from_trainer(trainer: Any, logprobs_source: str) -> SamplerConfig:
+    """The sampler config TRL is running with, bound to where the behavior bits came from.
+
+    ``logprobs_mode`` is TRL's pinned vLLM mode when the engine produced the bits, else null (a
+    trainer forward has no engine mode); ``temperature_applied`` follows from the mode for the engine
+    and is True for every trainer-side source (see the module docstring for the TRL source lines)."""
     a = trainer.args
     use_vllm = bool(getattr(a, "use_vllm", False))
+    engine_mode = TRL_VLLM_LOGPROBS_MODE if use_vllm and logprobs_source == "engine_sampling" else None
+    applied = TRAINER_TEMPERATURE_APPLIED if logprobs_source in TRAINER_SOURCES else temperature_applied_for(engine_mode)
     model = getattr(trainer, "model", None)
     dtype = None
     try:
@@ -125,11 +173,12 @@ def sampler_from_trainer(trainer: Any, logprobs_mode: str) -> SamplerConfig:
         temperature=getattr(a, "temperature", None), top_p=getattr(a, "top_p", None),
         top_k=getattr(a, "top_k", None), min_p=getattr(a, "min_p", None),
         repetition_penalty=getattr(a, "repetition_penalty", None),
-        max_tokens=getattr(a, "max_completion_length", None), logprobs_mode=logprobs_mode,
+        max_tokens=getattr(a, "max_completion_length", None), logprobs_mode=engine_mode,
         dtype=dtype, engine=("vllm:" + str(getattr(a, "vllm_mode", "?"))) if use_vllm else "transformers",
         engine_version=_engine_version(use_vllm),
         tensor_parallel=getattr(a, "vllm_tensor_parallel_size", None) if use_vllm else None,
         seed_policy=f"seed={getattr(a, 'seed', None)}",
+        logprobs_source=logprobs_source, temperature_applied=applied,
     )
 
 
@@ -166,7 +215,7 @@ class MartingaleRecorder:
         self._tok_digest = self._tok if isinstance(self._tok, str) else tokenizer_digest(self._tok)
         self._dtype = logprob_dtype
         self._record_scores = record_scores
-        self._overrides = dict(sampler_overrides or {})
+        self._overrides = check_sampler_overrides(sampler_overrides or {})
         self._rev_cache: dict[tuple[int, str], LLMRevision] = {}
         self._wd_cache: dict[int, str] = {}
         self._next_row_id = 0
@@ -180,15 +229,13 @@ class MartingaleRecorder:
 
     # ---- revisions ----------------------------------------------------------------
 
-    def revision_for(self, trainer: Any, logprobs_mode: str) -> LLMRevision:
-        """One weights digest per (global_step, logprobs_mode); cached."""
+    def revision_for(self, trainer: Any, logprobs_source: str) -> LLMRevision:
+        """One weights digest per (global_step, logprobs_source); cached."""
         step = int(trainer.state.global_step)
-        key = (step, logprobs_mode)
+        key = (step, logprobs_source)
         if key in self._rev_cache:
             return self._rev_cache[key]
-        sampler = sampler_from_trainer(trainer, logprobs_mode)
-        if self._overrides:
-            sampler = SamplerConfig.from_dict({**sampler.to_dict(), **self._overrides})
+        sampler = apply_sampler_overrides(sampler_from_trainer(trainer, logprobs_source), self._overrides, logprobs_source)
         if step not in self._wd_cache:               # one full-weights digest per global step
             model = trainer.accelerator.unwrap_model(trainer.model) if hasattr(trainer, "accelerator") else trainer.model
             sd = model.state_dict()
@@ -226,8 +273,8 @@ class MartingaleRecorder:
         import torch
 
         self.stats["generation_calls"] += 1
-        logps, mode = self._behavior_logprobs(output, trainer)
-        rev = self.revision_for(trainer, mode)
+        logps, source = self._behavior_logprobs(output, trainer)
+        rev = self.revision_for(trainer, source)
         actor = int(getattr(getattr(trainer, "accelerator", None), "process_index", 0))
         step = int(trainer.state.global_step)
         p_ids, p_mask = output["prompt_ids"].to("cpu"), output["prompt_mask"].to("cpu")
@@ -481,6 +528,6 @@ def __getattr__(name: str) -> Any:
     raise AttributeError(name)
 
 
-__all__ = ["AmbiguousOrigin", "MartingaleRecorder", "MartingaleGRPOMixin", "OriginNotFound", "build_trainer_class",
-           "sampler_from_trainer"]
+__all__ = ["AmbiguousOrigin", "MartingaleRecorder", "MartingaleGRPOMixin", "OriginNotFound", "apply_sampler_overrides",
+           "build_trainer_class", "check_sampler_overrides", "sampler_from_trainer"]
 # MartingaleGRPOTrainer is served lazily by __getattr__ (it needs TRL).

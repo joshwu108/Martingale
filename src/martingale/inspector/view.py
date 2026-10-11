@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from martingale.diagnostics.alarms import AlarmConfig
+from martingale.diagnostics.comparability import lag0_verdict
 from martingale.diagnostics.replay import ReplayStep, replay
 from martingale.diagnostics.staleness import Bucket, ScoredToken, _fs, attribute, decompose, diagnosis, scored_tokens
 from martingale.inspector.tokenizer import TokenDecoder
@@ -198,14 +199,19 @@ class RecordView:
     def _steps(self, rows: list[SequenceRow], toks: list[ScoredToken]) -> list[dict[str, Any]]:
         buckets: dict[tuple[int, int], Bucket] = {}
         conf_all: dict[int, int] = {}
+        pairs: dict[int, set[tuple[str, str]]] = {}
         for t in toks:
             buckets.setdefault((t.behavior_step, t.lag), Bucket(t.lag)).add(t)
             conf_all[t.behavior_step] = conf_all.get(t.behavior_step, 0) + int(t.confident_disagreement)
+            if t.lag == 0:
+                pairs.setdefault(t.behavior_step, set()).add((t.behavior_revision, t.train_revision))
         gen_steps = sorted({r.generation_step for r in rows} | {g for g, _ in buckets})
         out = []
         for g in gen_steps:
             by_lag = [buckets[(g, lag)].summary() for lag in sorted(lag for gg, lag in buckets if gg == g)]
-            lag0 = next((b for b in by_lag if b["lag"] == 0), None)
+            withheld, _caveat = lag0_verdict((self.ledger.get_revision(b).sampler, self.ledger.get_revision(s).sampler)
+                                             for b, s in sorted(pairs.get(g, ())))
+            lag0 = None if withheld else next((b for b in by_lag if b["lag"] == 0), None)
             mine = [r for r in rows if r.generation_step == g]
             out.append({
                 "generation_step": g, "n_sequences": len(mine), "n_tokens": sum(r.length for r in mine),
@@ -213,6 +219,7 @@ class RecordView:
                 "n_mixed_sequences": sum(r.mixed_revision for r in mine),
                 "lags": [b["lag"] for b in by_lag], "by_lag": by_lag,
                 "lag0_floor": None if lag0 is None else lag0["mean_abs_log_ratio"],
+                "lag0_floor_withheld": withheld,
                 "n_confident_disagreements_lag0": 0 if lag0 is None else lag0["n_confident_disagreements"],
                 "n_confident_disagreements": conf_all.get(g, 0),
                 "float_informational": {

@@ -15,8 +15,10 @@ import math
 from dataclasses import dataclass, field
 from fractions import Fraction
 
+from martingale.diagnostics.comparability import lag0_verdict
 from martingale.diagnostics.staleness import CONFIDENT_GAP, CONFIDENT_LOGPROB, DEFAULT_EPS, MAX_EXP, _fs, _pct
 from martingale.record.bits import bits_to_fraction
+from martingale.record.revision import SamplerConfig
 from martingale.record.store import TokenLedger
 from martingale.record.tokens import SequenceRecord
 
@@ -115,6 +117,8 @@ class StepDiagnosis:
     unscored_new_sequences: int
     by_provenance: dict[str, list[dict]] = field(default_factory=dict)             # this step only, per provenance
     cumulative_by_provenance: dict[str, list[dict]] = field(default_factory=dict)
+    floor_withheld: str | None = None        # why the lag-0 floor is not read (comparability.py); None = it is
+    floor_caveat: str | None = None          # the floor is read, but temperature scaling is unknown on a side
 
     def metrics(self, prefix: str = "martingale/") -> dict[str, float]:
         """Flat float metrics for a trainer log (W&B, TensorBoard). Informational floats."""
@@ -135,8 +139,11 @@ class StepDiagnosis:
             out[prefix + "engine_share"] = a["engine_share"]
         if self.floor_mean_abs is not None:
             out[prefix + "floor_mean_abs_log_ratio"] = float(self.floor_mean_abs)
+        out[prefix + "floor_withheld"] = float(self.floor_withheld is not None)
         for b in self.by_lag:
             f = b["float_informational"]
+            if b["lag"] == 0 and self.floor_withheld is not None:
+                continue                      # not a floor: its numbers would be read as one
             if b["lag"] == 0:
                 out[prefix + "confident_disagreements_lag0"] = float(b.get("n_confident_disagreements", 0))
             out[prefix + f"ess_fraction_lag{b['lag']}"] = f["ess_fraction"]
@@ -159,6 +166,7 @@ class IncrementalDiagnosis:
         self._seq_cache: dict[str, SequenceRecord] = {}
         self._step_cache: dict[str, int] = {}
         self._weights_cache: dict[str, str] = {}
+        self._sampler_cache: dict[str, SamplerConfig] = {}
         self._unscored: set[str] = set()
 
     def _sequence(self, digest: str) -> SequenceRecord:
@@ -171,6 +179,7 @@ class IncrementalDiagnosis:
             rev = self._ledger.get_revision(digest)
             self._step_cache[digest] = rev.step
             self._weights_cache[digest] = rev.weights_digest
+            self._sampler_cache[digest] = rev.sampler
         return self._step_cache[digest], self._weights_cache[digest]
 
     def update(self, step: int) -> StepDiagnosis:
@@ -193,6 +202,7 @@ class IncrementalDiagnosis:
         step_prov: dict[tuple[str, int], RunningBucket] = {}
         n_new = 0
         n_negative = 0
+        lag0_pairs: set[tuple[str, str]] = set()
         for rid, sc in self._ledger.scores_since(self._score_rowid):
             self._score_rowid = rid
             n_new += 1
@@ -204,6 +214,8 @@ class IncrementalDiagnosis:
             lag = t_step - b_step
             if lag < 0:
                 n_negative += 1
+            elif lag == 0:
+                lag0_pairs.add((tok.revision_digest, sc.train_revision_digest))
             b_lp = bits_to_fraction(tok.logprob_bits)
             lr = bits_to_fraction(sc.logprob_bits) - b_lp
             for table in (step_buckets, self._cumulative):
@@ -213,8 +225,10 @@ class IncrementalDiagnosis:
                 ptable.setdefault((seq.provenance, lag), RunningBucket(lag, size=self._size)).add(
                     seq.digest, sc.position, lr, seq.is_mixed_revision, self._eps, behavior_logprob=b_lp)
         by_lag = [step_buckets[k].summary(self._eps) for k in sorted(step_buckets)]
-        floor = Fraction(step_buckets[0].summary(self._eps)["mean_abs_log_ratio"]) if 0 in step_buckets else None
-        partial: dict = {"by_lag": by_lag, "lag0_floor": step_buckets[0].summary(self._eps) if 0 in step_buckets else None}
+        withheld, caveat = lag0_verdict((self._sampler_cache[b], self._sampler_cache[t]) for b, t in sorted(lag0_pairs))
+        lag0 = step_buckets[0].summary(self._eps) if 0 in step_buckets and withheld is None else None
+        floor = None if lag0 is None else Fraction(lag0["mean_abs_log_ratio"])
+        partial: dict = {"by_lag": by_lag, "lag0_floor": lag0}
         return StepDiagnosis(
             step=step, n_new_scores=n_new, n_new_sequences=len(new_seqs), by_lag=by_lag,
             cumulative_by_lag=[self._cumulative[k].summary(self._eps) for k in sorted(self._cumulative)],
@@ -222,6 +236,7 @@ class IncrementalDiagnosis:
             span_fraction=(spanning / len(new_seqs)) if new_seqs else 0.0, n_negative_lag=n_negative,
             unscored_new_sequences=len(self._unscored),
             by_provenance=self._by_provenance(step_prov), cumulative_by_provenance=self._by_provenance(self._cumulative_prov),
+            floor_withheld=withheld, floor_caveat=caveat,
         )
 
     def _by_provenance(self, table: dict[tuple[str, int], RunningBucket]) -> dict[str, list[dict]]:

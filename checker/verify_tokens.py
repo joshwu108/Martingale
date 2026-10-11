@@ -35,6 +35,10 @@ SAMPLER_KEYS = (
     "temperature", "top_p", "top_k", "min_p", "repetition_penalty", "max_tokens",
     "logprobs_mode", "dtype", "engine", "engine_version", "tensor_parallel", "seed_policy",
 )
+# Keys a producer may add (2026-10-10); manifests written before then lack them and still verify.
+# `temperature_applied` must be a JSON boolean when present: a reader decides from it whether the
+# lag-0 log-ratio compares like with like, so a 1 or "true" standing in for it is a forgery.
+SAMPLER_OPTIONAL_KEYS = ("logprobs_source", "temperature_applied")
 
 
 MANIFEST_KEYS = frozenset({"kind", "weights_digest", "tokenizer_digest", "sampler", "parent_digest", "step",
@@ -99,8 +103,13 @@ def verify_revision_manifest(d: dict) -> list[str]:
     if not _is_int(d.get("step")):
         errs.append("manifest step malformed")
     sampler = d.get("sampler")
-    if not isinstance(sampler, dict) or set(sampler) != set(SAMPLER_KEYS):
+    if not isinstance(sampler, dict) or not set(SAMPLER_KEYS) <= set(sampler) \
+            or not set(sampler) <= set(SAMPLER_KEYS) | set(SAMPLER_OPTIONAL_KEYS):
         errs.append("manifest sampler keys malformed")
+    elif "temperature_applied" in sampler and type(sampler["temperature_applied"]) is not bool:
+        errs.append("manifest sampler temperature_applied is not a boolean")
+    elif "logprobs_source" in sampler and not isinstance(sampler["logprobs_source"], str):
+        errs.append("manifest sampler logprobs_source is not a string")
     if errs:
         return errs
     computed = _digest({"kind": "llm", "weights_digest": d["weights_digest"],

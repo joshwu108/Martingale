@@ -24,8 +24,9 @@ from pathlib import Path
 
 from martingale.record import Recorder, SamplerConfig, bits_to_fraction
 
-SAMPLER = SamplerConfig(temperature=1.0, top_p=1.0, max_tokens=8, logprobs_mode="engine_sampling",
-                        dtype="bfloat16", engine="demo-engine", engine_version="0", seed_policy="demo")
+SAMPLER = SamplerConfig(temperature=1.0, top_p=1.0, max_tokens=8, logprobs_mode="processed_logprobs",
+                        dtype="bfloat16", engine="demo-engine", engine_version="0", seed_policy="demo",
+                        logprobs_source="engine_sampling", temperature_applied=True)
 STEPS = (0, 1, 2, 4)
 N_SEQ = 48
 LEN = 8

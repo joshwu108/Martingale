@@ -387,12 +387,36 @@ of the logical tensor, not the shard layout.
 
 ### 7.3 Sampler config
 
-Canonical JSON with exactly these keys (missing → `null`), all bound into the
-revision digest: `temperature, top_p, top_k, min_p, repetition_penalty,
-max_tokens, logprobs_mode, dtype, engine, engine_version, tensor_parallel,
-seed_policy`. `logprobs_mode` records whether the engine returned raw or
-post-sampling-filter log-probs (vLLM's `logprobs_mode`), because the ratio
-semantics differ. Any change of any key is a new revision.
+Canonical JSON, all keys bound into the revision digest. Twelve keys are always
+present (missing → `null`): `temperature, top_p, top_k, min_p,
+repetition_penalty, max_tokens, logprobs_mode, dtype, engine, engine_version,
+tensor_parallel, seed_policy`. Two keys added 2026-10-10 are present only when
+known, so manifests written before then digest unchanged and still verify:
+`logprobs_source`, `temperature_applied`. Any change of any key is a new revision.
+
+| Key | Meaning | Values |
+|---|---|---|
+| `logprobs_mode` | the engine's reporting mode, vLLM's vocabulary (`vllm/config/model.py` v0.28.0 line 250, default `raw_logprobs`): raw is the log-softmax of the logits, processed is after every sampling processor, temperature and top-k/top-p included (`vllm/v1/sample/sampler.py` lines 88-105 and 277-287) | `raw_logprobs`, `processed_logprobs`, `raw_logits`, `processed_logits`, null when no engine produced the bits. Records before 2026-10-10 carry the source name here instead |
+| `logprobs_source` | which pass produced the behavior bits | `engine_sampling`, `trainer_old_logps`, `trainer_recompute`, `trainer_scores` |
+| `temperature_applied` | whether that pass divided the logits by `temperature` before its log-softmax; from the mode for an engine, from the framework's code for a trainer pass. The doctor reads the lag-0 floor only when both sides agree on it (`diagnostics/comparability.py`) | `true`, `false`, absent = unknown |
+
+What the two pinned frameworks request, from their installed source
+(TRL 1.13.0 and verl 0.9.1, read 2026-10-10):
+
+| Framework | Behavior log-probs | Trainer log-probs | `temperature_applied` |
+|---|---|---|---|
+| TRL 1.13.0, vLLM colocate | `LLM(..., logprobs_mode="processed_logprobs")`, `trl/generation/vllm_generation.py:361` ("Important so temperature scaling/logit tweaking affects the TIS log probs") | `logits = logits / self.temperature` before `selective_log_softmax`, `trl/trainer/grpo_trainer.py:1543` | engine true, trainer true |
+| TRL 1.13.0, vLLM server | `trl vllm-serve` passes `--logprobs-mode processed_logprobs`, `trl/scripts/vllm_serve.py:265-266` (doc at 201-202). TRL does not check the server; a server launched by hand without the flag returns vLLM's default, raw | same | engine true as recorded; declare a hand-launched raw server with `sampler_overrides` |
+| TRL 1.13.0, transformers generate | no engine mode: `old_per_token_logps` or the adapter's recompute, both through `grpo_trainer.py:1543` | same | trainer true on both sides |
+| verl 0.9.1 | `rollout.logprobs_mode`, default `processed_logprobs` (`verl/workers/config/rollout.py:197`, `verl/trainer/config/rollout/rollout.yaml:93`), passed to the engine unchanged (`verl/workers/rollout/vllm_rollout/vllm_async_server.py:338`); `rollout_log_probs` exist only with `rollout.calculate_log_probs` (`rollout.py:219`) | logits scaled by the rollout temperature (`verl/workers/engine/fsdp/transformer_impl.py:98-103`, used at 1159; legacy `verl/utils/torch_functional.py:679-681`), the temperature set at `verl/trainer/ppo/ray_trainer.py:1331` | engine from the configured mode, actor true |
+
+So with both frameworks' defaults the lag-0 ratio compares two
+temperature-scaled log-softmaxes and is like for like at any temperature. The
+case the floor must not be read in is a raw-mode engine (vLLM's own default)
+against either trainer at temperature != 1: the ratio then measures the
+temperature. Processed log-probs also include top-k/top-p/min-p
+renormalisation, which neither trainer applies; at non-default filters the
+floor includes that effect and the record does not separate it (nonclaims).
 
 ### 7.4 `TokenRecord`
 
@@ -492,7 +516,7 @@ expanded form). Decide (3) only if a real run needs it.
 | Trainer-side log-probs | not in 7.x | **`ScoreRecord`**: (sequence digest, position, train revision, log-prob bits), chained per sequence from the sequence digest | without it lag and the staleness-vs-mismatch split (Phase 2) are not computable from the record |
 | Anchor | per-actor heads | one **ledger head** = digest of {per-actor sequence heads, per-sequence score heads, sorted revision set} (`TokenLedger.head()`), recomputed by the checker and compared to `expected_head` | per-actor heads missed re-signed score chains and dropped unreferenced revisions (found by the mutation campaign) |
 | D6 run-length encoding | Phase 1 | **deferred**: storage is one row per token; the canonical form is the expanded one so RLE stays a storage-only change | no real run has needed it yet |
-| D7 recompute tier | deferred to Phase 3 | still deferred; `MartingaleRecorder` records which log-prob source fed the record (`logprobs_mode` ∈ engine_sampling / trainer_old_logps / trainer_recompute) so tier 2 has what it needs | needs a real engine |
+| D7 recompute tier | deferred to Phase 3 | still deferred; `MartingaleRecorder` records which log-prob source fed the record (`logprobs_source` ∈ engine_sampling / trainer_old_logps / trainer_recompute / trainer_scores; it lived in `logprobs_mode` until 2026-10-10, see 7.3) so tier 2 has what it needs | needs a real engine |
 | Storage | `revisions.db` + `ledger.db` gain tables | separate **`tokens.db`** (`llm_revisions`, `sequences`, `tokens` inline in the sequence row, `scores`) with `synchronous=FULL` and `fullfsync=ON` | keeps the exact ledger schema untouched |
 
 | Unbound keys (review 2026-10-06) | not addressed | every object type has an allow-list; any extra key is a forgery, because a downstream reader would otherwise be fed data the digest never covered | found by review, not by the first campaign |

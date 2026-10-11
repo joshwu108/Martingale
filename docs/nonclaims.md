@@ -59,7 +59,7 @@ Every result is scoped to the constraints below.
   cannot verify that a token was actually sampled from the recorded
   distribution: inference engines do not expose a keyed draw. This is the
   difference between the exact ledger (draw re-derived) and the token record.
-- **Log-probs are whatever the source reported.** `logprobs_mode` in the
+- **Log-probs are whatever the source reported.** `logprobs_source` in the
   revision says whether they came from the engine's sampler, the trainer's
   no-grad pass under the generating weights, or a recompute. The record binds
   the bits; it does not claim they are the true sampling probabilities.
@@ -86,12 +86,23 @@ Every result is scoped to the constraints below.
   under its own actor id, but sharing one file across ranks over a network
   filesystem is untested. Sharded (FSDP / ZeRO-3) state dicts are refused
   rather than digested wrongly; gather the weights first.
-- **`logprobs_mode` names the source, not the engine's filtering.** It records
-  whether the bits came from the engine's sampler, the trainer's no-grad
-  pass, or a recompute. Whether vLLM reported pre- or post-temperature
-  log-probs is a property of the engine configuration (vLLM `logprobs_mode`)
-  and is not yet captured; at temperature != 1 the lag-0 floor therefore
-  includes a temperature effect.
+- **The log-prob mode is bound, with these limits.** Since 2026-10-10 the
+  revision carries vLLM's `logprobs_mode` (raw or processed), `logprobs_source`
+  and `temperature_applied`, and the doctor withholds the lag-0 floor when the
+  record shows the behavior and trainer log-probs differ in temperature scaling
+  at temperature != 1 (design.md 7.3 has the TRL and verl source lines). Limits:
+  (1) records written before that date carry the source name in `logprobs_mode`
+  and no `temperature_applied`; their floor is reported as before, with a caveat
+  line at temperature != 1. (2) In TRL server mode the recorded mode is the flag
+  TRL's own `vllm-serve` passes, not an observation of the server; a server
+  started by hand without `--logprobs-mode processed_logprobs` returns raw
+  log-probs and must be declared through `sampler_overrides`. For verl the mode
+  is read from the `rollout_config` passed to the recorder; without it the mode
+  is recorded as unknown. (3) Processed log-probs are renormalised after
+  top-k/top-p/min-p and repetition penalty, which neither trainer applies; at
+  non-default filters the floor includes that effect and the record does not
+  separate it. (4) `temperature_applied` for a trainer pass is read from the
+  pinned framework's source, not measured.
 - The veRL and Lightning hooks publish revisions only; they do not record
   tokens. No claim of veRL or Lightning integration beyond that.
 - History: until 2026-10-06 this layer was a prototype whose ledger the checker

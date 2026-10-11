@@ -147,6 +147,53 @@ def test_real_trl_class_smoke():
     assert cls.__name__ == "MartingaleGRPOTrainer"
 
 
+class TestLogprobsMode:
+    """2026-10-10: the revision binds rollout.logprobs_mode (verl 0.9.1 default processed_logprobs,
+    config/rollout.py:197) and that the actor scales by temperature (transformer_impl.py:98-103)."""
+
+    ROLLOUT = {"name": "vllm", "temperature": 0.7, "top_p": 1.0, "top_k": -1, "response_length": 16,
+               "dtype": "bfloat16", "tensor_model_parallel_size": 1, "seed": 42,
+               "logprobs_mode": "processed_logprobs", "calculate_log_probs": True}
+
+    def _flight(self, tmp_path, **cfg):
+        from types import SimpleNamespace
+        rollout = SimpleNamespace(**{**self.ROLLOUT, **cfg})          # attribute access, like a DictConfig
+        return MartingaleVerlRecorder(tmp_path / "ws", tokenizer=b"t", rollout_config=rollout)
+
+    def test_rollout_config_is_bound_into_both_revisions(self, tmp_path, weights):
+        flight = self._flight(tmp_path)
+        batch = make_batch()
+        flight.on_rollout(batch, step=0, weights=weights)
+        flight.on_train_step(batch, batch.batch["rollout_log_probs"], step=0, weights=weights)
+        revs = {r.sampler.logprobs_source: r.sampler for r in flight.recorder.ledger.all_revisions()}
+        eng, act = revs["engine_sampling"], revs["trainer_scores"]
+        assert eng.logprobs_mode == "processed_logprobs" and eng.temperature_applied is True
+        assert eng.temperature == 0.7 and eng.engine == "verl:vllm" and eng.max_tokens == 16 and eng.top_k == -1
+        assert act.logprobs_mode is None and act.temperature_applied is True and act.temperature == 0.7
+        assert decompose(flight.recorder.ledger)["lag0_floor"] is not None        # like for like: floor reported
+
+    def test_plain_dict_config_works_too(self, tmp_path, weights):
+        flight = MartingaleVerlRecorder(tmp_path / "ws", tokenizer=b"t", rollout_config=dict(self.ROLLOUT))
+        flight.on_rollout(make_batch(), step=0, weights=weights)
+        assert next(flight.recorder.ledger.all_revisions()).sampler.logprobs_mode == "processed_logprobs"
+
+    def test_raw_logprobs_rollout_withholds_the_floor(self, tmp_path, weights):
+        flight = self._flight(tmp_path, logprobs_mode="raw_logprobs")
+        batch = make_batch()
+        flight.on_rollout(batch, step=0, weights=weights)
+        flight.on_train_step(batch, batch.batch["rollout_log_probs"], step=0, weights=weights)
+        s = next(r.sampler for r in flight.recorder.ledger.all_revisions() if r.sampler.logprobs_source == "engine_sampling")
+        assert s.logprobs_mode == "raw_logprobs" and s.temperature_applied is False
+        d = decompose(flight.recorder.ledger)
+        assert d["lag0_floor"] is None and "raw_logprobs" in d["lag0_floor_withheld"]["reason"]
+
+    def test_without_rollout_config_the_mode_is_unknown(self, flight, weights):
+        flight.on_rollout(make_batch(), step=0, weights=weights)
+        s = next(flight.recorder.ledger.all_revisions()).sampler
+        assert s.logprobs_source == "engine_sampling" and s.logprobs_mode is None and s.temperature_applied is None
+        assert s.engine == "verl"
+
+
 def test_require_verl_missing_package():
     import importlib.util
 

@@ -19,6 +19,27 @@ SAMPLER_KEYS: tuple[str, ...] = (
     "temperature", "top_p", "top_k", "min_p", "repetition_penalty", "max_tokens",
     "logprobs_mode", "dtype", "engine", "engine_version", "tensor_parallel", "seed_policy",
 )
+# Added 2026-10-10. Emitted only when set, so manifests written before then digest unchanged.
+# An absent key means "unknown"; an explicit null is not a canonical form and the checker rejects it.
+SAMPLER_OPTIONAL_KEYS: tuple[str, ...] = ("logprobs_source", "temperature_applied")
+
+# vLLM's `logprobs_mode` vocabulary (vllm/config/model.py, v0.28.0 line 250). "raw" is the
+# log-softmax of the model's logits; "processed" is after every sampling processor, including
+# temperature and top-k/top-p (vllm/v1/sample/sampler.py lines 88-105 and 277-287).
+LOGPROBS_MODES: tuple[str, ...] = ("raw_logprobs", "processed_logprobs", "raw_logits", "processed_logits")
+PROCESSED_LOGPROBS_MODES: frozenset[str] = frozenset({"processed_logprobs", "processed_logits"})
+RAW_LOGPROBS_MODES: frozenset[str] = frozenset({"raw_logprobs", "raw_logits"})
+
+
+def temperature_applied_for(logprobs_mode: str | None) -> bool | None:
+    """Whether an engine reporting in `logprobs_mode` divided by temperature before the log-softmax.
+    None when the mode is unknown or not in vLLM's vocabulary (a record written before 2026-10-10
+    carries the source name here)."""
+    if logprobs_mode in PROCESSED_LOGPROBS_MODES:
+        return True
+    if logprobs_mode in RAW_LOGPROBS_MODES:
+        return False
+    return None
 
 
 @dataclass(frozen=True)
@@ -26,8 +47,13 @@ class SamplerConfig:
     """Every key that changes the sampling distribution or the reported log-probs.
 
     Missing values are stored as null; any change to any key is a new revision.
-    `logprobs_mode` records whether the engine reports raw or post-filter log-probs
-    (vLLM's `logprobs_mode`), because the ratio semantics differ.
+    `logprobs_mode` is the engine's reporting mode in vLLM's vocabulary (`LOGPROBS_MODES`):
+    raw log-probs are the log-softmax of the logits, processed ones have temperature and the
+    sampling filters applied, so the ratio semantics differ. `logprobs_source` says which pass
+    produced the bits (engine_sampling, trainer_old_logps, trainer_recompute, trainer_scores)
+    and `temperature_applied` whether that pass divided the logits by `temperature` first;
+    the diagnostics compare lag-0 log-probs only when both sides agree on it. Records written
+    before 2026-10-10 carry the source name in `logprobs_mode` and lack the other two keys.
     """
     temperature: float | None = None
     top_p: float | None = None
@@ -41,16 +67,25 @@ class SamplerConfig:
     engine_version: str | None = None
     tensor_parallel: int | None = None
     seed_policy: str | None = None
+    logprobs_source: str | None = None
+    temperature_applied: bool | None = None
+
+    def __post_init__(self) -> None:
+        if self.temperature_applied is not None and type(self.temperature_applied) is not bool:
+            raise ValueError(f"temperature_applied must be a bool or None, got {self.temperature_applied!r}")
 
     def to_dict(self) -> dict[str, Any]:
-        return {k: getattr(self, k) for k in SAMPLER_KEYS}
+        """Canonical form: the twelve original keys always, the optional keys only when set."""
+        d: dict[str, Any] = {k: getattr(self, k) for k in SAMPLER_KEYS}
+        d.update({k: getattr(self, k) for k in SAMPLER_OPTIONAL_KEYS if getattr(self, k) is not None})
+        return d
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any]) -> SamplerConfig:
-        unknown = set(d) - set(SAMPLER_KEYS)
+        unknown = set(d) - set(SAMPLER_KEYS) - set(SAMPLER_OPTIONAL_KEYS)
         if unknown:
             raise ValueError(f"unknown sampler keys {sorted(unknown)}")
-        return cls(**{k: d.get(k) for k in SAMPLER_KEYS})
+        return cls(**{k: d.get(k) for k in SAMPLER_KEYS + SAMPLER_OPTIONAL_KEYS})
 
 
 def _tensor_parts(name: str, value: Any) -> tuple[str, tuple[int, ...], bytes]:

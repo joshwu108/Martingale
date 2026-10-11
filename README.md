@@ -104,7 +104,8 @@ loss receives live log-probs:
 ```python
 from martingale.integrations.verl import MartingaleMonitor, MartingaleVerlRecorder, wrap_ppo_loss
 
-flight = MartingaleVerlRecorder("./martingale_ws", tokenizer=tokenizer)
+flight = MartingaleVerlRecorder("./martingale_ws", tokenizer=tokenizer,
+                                rollout_config=config.actor_rollout_ref.rollout)   # binds logprobs_mode, temperature
 flight.on_rollout(generated_batch, step=optimizer_step, weights=full_actor_state)
 worker.set_loss_fn(wrap_ppo_loss(worker.loss_fn, flight,
                                  step=lambda: optimizer_step,
@@ -231,8 +232,14 @@ SIGKILL crash cuts); its five theses and their reports are in
 - Four real runs of 16 steps on a 0.5B model; no claim beyond them. The precision-mismatch finding
   is one model, one TRL and vLLM version, one seed; the sync itself was checked elementwise on that
   configuration only (tensor parallel 1, no sleep mode, no quantization).
-- The lag-0 floor includes whatever the engine's log-prob mode is (vLLM
-  processed vs raw log-probs are a config property not yet captured).
+- The revision binds the engine's log-prob mode (vLLM `logprobs_mode`) and whether
+  each side divided by the temperature; the doctor withholds the lag-0 floor when
+  the record shows the two sides differ (a raw-mode engine against a
+  temperature-scaling trainer at temperature != 1). TRL 1.13 and verl 0.9.1 both
+  request processed log-probs and both scale the trainer's logits, so their floor
+  is like for like; in TRL server mode the mode is TRL's flag, not an observation
+  of the server, and top-k/top-p renormalisation inside processed log-probs is
+  not separated from the floor (`docs/nonclaims.md`).
 - The record binds what the engine reported; it cannot verify the draw.
 - Exact results hold for finite tabular rational MDPs and the rational simplex
   parameterization only. Single host, CPU evidence; no performance claims.
