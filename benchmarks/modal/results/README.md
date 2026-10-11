@@ -28,8 +28,36 @@ balance reorder in 8/8 updates and 256/256 loss calls, live log-probs in 256/256
 trainer digest, `martingale/*` in all 8 logged steps). 31 optimizer steps applied, 1 skipped by the fp16 grad
 scaler (`grad_norm` inf at global step 2). The `weights_unchanged` error alarm is correct: global step 1 had
 reward 1.0 on every completion, `grad_norm` 0 and `pg_loss` 0, so the rollouts at applied steps 0 and 4 carry
-the same weights digest (the alarm names them by the monitor's post-update step, 4 and 7). Four floor
-warnings (`floor_jump` at 7 and 11, `floor_tail` at 27 and 31) were raised and not investigated.
+the same weights digest (the alarm names them by the monitor's post-update step, 4 and 7).
+
+The four floor warnings were investigated from the read-only token ledger. The alarm step is when the
+monitor ran **after** an update; each lag-0 comparison below was scored at the earlier rollout revision.
+Log-probs are behavior (vLLM) → trainer; positions are zero-based Qwen completion-token positions. All
+listed tokens have lag 0 and the behavior and trainer revisions have the same expected weights digest.
+
+| warning | score revision; lag-0 tokens | largest recorded gaps (sequence, position, token, log-probs) | finding |
+|---|---|---|---|
+| `floor_jump@7` | 4; 103 | `step4/row89`, 0, `2`, −0.080245309 → −0.082210809 (−0.001965500); rows 88, 93, 94 have the same token and ≈−0.001941234 | Floor 0.000130885, 5.12× the preceding 0.000025541. Those four tokens supply 57.8% of its absolute gap. The score revision still has the step-0 weights digest; the digest changes only in later applied updates. |
+| `floor_jump@11` | 7; 119 | `step7/row186` and `row190`, 1, `3`, −0.717411995 → −0.741696537 (−0.024284542); `row187`, 1, `4`, −0.670536995 → −0.647946537 (+0.022590458); `row184`, 1, `4`, −0.670536995 → −0.655413926 (+0.015123069) | Floor 0.000780702, 9.98× the trailing median. These four answer tokens supply 92.9% of its absolute gap. The step-7 digest differs from step 4, and the monitor ran after further updates at step 11. |
+| `floor_tail@27` | 23; 123 | `step23/row412` and `row414`, 0, `8`, −0.562390685 → −0.549068332 (+0.013322353); `row437`, 1, `9`, −0.072159454 → −0.076635629 (−0.004476175); `row433`, 1, `9`, −0.073255531 → −0.076635629 (−0.003380097) | Floor 0.000354341, 61.0× a very small trailing median. Four ordinary answer tokens supply 79.2% of its absolute gap. The step-23 digest differs from the preceding rollout and from the step-27 rollout digest. |
+| `floor_tail@31` | 27; 107 | `step27/row490` and `row491`, 1, `7`, −0.140651137 → −0.149076641 (−0.008425504); `row488`, 1, `7`, −0.140651137 → −0.146927103 (−0.006275967); `row494`, 1, `7`, −0.146927208 → −0.149076641 (−0.002149433) | Floor 0.000273256, 47.0× the small trailing median; these four tokens supply 86.4% of its absolute gap. The step-27 digest differs from step 23. No rollout after the final update published a step-31 revision. |
+
+There are **zero confident disagreements** in all four lag-0 buckets (and in the run's 910 lag-0
+tokens); the largest lag-0 gap in the run is 0.0243 nats. The `floor_tail` name and old wording inferred
+low-probability tail tokens from a relative jump, but the actual drivers above are mostly ordinary,
+high-probability digits. Small fp16 engine versus mixed-precision trainer numerical differences are
+consistent with these gaps, but the record cannot isolate their kernel/precision cause. The recorded
+rollout/trainer digests match at all eight rollout steps, row IDs survived, and there were no unmatched
+rows: there is no evidence here of an adapter alignment fault. A served-vLLM weight comparison was not
+recorded, so equality of the actual served tensors is not proven. The step boundary explains the alarm
+labels, not the floor change: monitor steps 7, 11 and 27 follow scores at revisions 4, 7 and 23; step
+31 follows scores at 27. The applied-update counter is correct, including the skipped update. We keep
+the warning thresholds and add the score revision step to future alarm evidence and wording.
+
+`trainer_log.json` reports `actor/grad_norm = inf` at global step 2. The worker counted 31 applied and
+one skipped attempt; the ledger has trainer-score revisions at applied steps 0 through 30 and no extra
+version for the skipped attempt. The log is aggregated per global step, so it does not identify which
+of that step's four mini-batch attempts overflowed.
 
 Against `..._t1.0_probe`, the lag-0 floor is not in the same range: 2.0e-04 for the whole verl run against
 1.0e-02 for the TRL run, with per-generation values overlapping only between 1.3e-04 and 7.8e-04. The runs

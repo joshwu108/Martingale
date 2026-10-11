@@ -33,3 +33,38 @@ Use one shared workspace per actor rank. A worker can open a separate recorder o
 - Contradicted, the README snippet that wrapped `worker.loss_fn` directly: the actor's loss is `partial(ppo_loss, config=actor_config)` (`workers/engine_workers.py:643`) and the FSDP engine calls it with keywords only (`workers/engine/fsdp/transformer_impl.py:1576`). Wrap `loss_fn.func` and rebind `loss_fn.keywords`, as `benchmarks/modal/verl_hooks.py` `WorkerHooks.install` does.
 - Confirmed as far as it goes, line 11: digesting `engine.get_per_tensor_param()` gave the same weights digest for each rollout and for the first loss call at the same optimizer step (8/8). That is the expected rollout revision; the served vLLM weights were not compared, so line 11's runtime-check caveat stands.
 - New: with fp16 the grad scaler skipped 1 of 32 optimizer steps (`grad_norm` inf), and a step with all-equal rewards gives `grad_norm` 0 and unchanged weights, which the shared monitor reports as `weights_unchanged` (error). Count steps by applied updates, not loss calls.
+
+## Offline floor-warning investigation (2026-10-10)
+
+The four warnings in `alarms.json` were traced through `TokenLedger.all_sequences()`, `scores_for()`,
+and `all_revisions()`; the token details are in the [results README](../benchmarks/modal/results/README.md).
+`floor_jump@7` is the 103 lag-0 tokens scored at applied step 4; its largest gap is 0.0019655 nats
+on answer digit `2` (`step4/row89`, position 0), and four copies account for 57.8% of the floor.
+`floor_jump@11` is the 119 tokens scored at step 7; `3`/`4` at position 1 in four sequences account
+for 92.9% of the floor, with a maximum gap of 0.0242845 nats. `floor_tail@27` is the 123 tokens
+scored at step 23; two position-0 `8` tokens differ by 0.0133224 nats and the top four supply 79.2%.
+`floor_tail@31` is the 107 tokens scored at step 27; two position-1 `7` tokens differ by 0.0084255
+nats and the top four supply 86.4%. All those comparisons have lag 0 and matching **expected**
+weights digests. None is a confident disagreement. The run's 910 lag-0 tokens have zero such cases.
+
+The record proves small, concentrated gaps on ordinary answer tokens, not a low-probability tail or
+an adapter error. fp16 vLLM versus the mixed-precision trainer is a plausible numerical source, but
+the run did not compare the actual served weights or perform a same-kernel recomputation, so that
+cause is inferred. The adapter checks passed (8/8 rollout/first-score expected digest pairs, all
+256 loss calls with row IDs, zero unmatched rows). The large relative factors, especially 61× and
+47×, divide by a trailing floor of only 5.81e-6. The previous `floor_tail` message claimed tail
+tokens disagreed by nats; it now asks for token inspection and carries the score revision step.
+
+The apparent step boundary is accounting: `DriverHooks.wrap_update` calls the monitor **after**
+the update, using the worker's count of applied optimizer steps. Warnings at monitor steps 7, 11,
+27, and 31 summarize first scores at revisions 4, 7, 23, and 27 respectively. At monitor steps
+7, 11, and 27 the next rollout's published digest differs from that earlier score digest; after
+the final update there is no next rollout/revision. This boundary explains the warning label and
+must not be mistaken for a lag-0 comparison across weights. The applied-step count and thresholds
+stay intact; alarm evidence now reports both the score revision step and monitor step.
+
+`trainer_log.json` records `actor/grad_norm = inf` at global step 2. The worker audit records 31
+applied updates and one skipped attempt. The ledger publishes trainer-score revisions at applied
+steps 0–30; the skipped attempt adds no weight version. The global-step log does not locate the
+overflow within its four mini-batches. A CPU fake-trainer test now inspects the revision list
+immediately after a skipped attempt.
