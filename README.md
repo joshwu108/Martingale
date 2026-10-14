@@ -12,13 +12,20 @@ trainer later thought.
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
 
-> **Status (2026-10-07).** Record, live diagnosis with alarms, TRL `GRPOTrainer`
+> **Status (2026-10-13).** Record, live diagnosis with alarms, TRL `GRPOTrainer`
 > integration, a verl 0.9.1 hook pair and an exact estimator bench are implemented
-> and tested (`make check`: ruff, mypy, full test suite). Four real TRL + vLLM runs and
-> one real verl + vLLM run (8 steps, 1x T4) on Modal completed and verified;
-> their numbers are below. Claims map to artifacts in
-> [`paper/claim_evidence.md`](paper/claim_evidence.md); limits in
-> [`docs/nonclaims.md`](docs/nonclaims.md).
+> and tested (`make check`: import isolation, ruff, mypy, 580 passed and 4 skipped
+> for optional `trl`/`verl`/`tensordict`). Five real runs on Modal completed and verified:
+> four TRL 1.13 + vLLM 0.28 GRPO runs (16 steps, A10G) and one verl 0.9.1 + vLLM 0.24 run
+> (8 steps, 1x T4). On top of those, a replay acceptance run (the bf16 TRL recipe with
+> 4 of 16 rows per batch replayed from earlier batches) passed the anchored checker
+> with 12 replayed sequences bound to their origins. Each revision now binds the engine's
+> log-prob mode and whether each side scaled by the temperature, and the doctor
+> withholds a lag-0 floor whose two sides are not comparable. Every committed record
+> re-verifies read-only against the head its run published, except `_t0.7`, whose
+> record was lost ([`benchmarks/modal/results/`](benchmarks/modal/results/README.md)).
+> Claims map to artifacts in [`paper/claim_evidence.md`](paper/claim_evidence.md);
+> limits in [`docs/nonclaims.md`](docs/nonclaims.md).
 
 ## First real run (2026-10-06): it caught an fp32 trainer that a bf16 engine could not see
 
@@ -141,6 +148,7 @@ print("ledger head:", flight.head())     # one line for your run log
 ```bash
 martingale doctor --dir ./martingale_ws          # the diagnosis above, from your run
 martingale doctor --dir ./martingale_ws --json out.json --markdown out.md
+martingale doctor --dir ./martingale_ws --advise --lr 5e-6 --updates-per-pass 2   # largest sync interval, lr ceiling (docs/advise.md)
 martingale recompute --dir ./martingale_ws --model <checkpoint>   # which weights did the engine really use?
 ```
 

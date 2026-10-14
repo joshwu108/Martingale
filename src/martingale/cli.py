@@ -189,20 +189,54 @@ def _verify_tokens(ws: Path, expected_head: str | None) -> bool:
               help="Clip half-widths to report clipped fractions for (repeatable).")
 @click.option("--json", "json_out", type=click.Path(), default=None, help="Write the full JSON report here.")
 @click.option("--markdown", "md_out", type=click.Path(), default=None, help="Write the markdown table here.")
-def doctor(workspace: str, eps: tuple[float, ...], json_out: str | None, md_out: str | None):
+@click.option("--advise", is_flag=True, help="Suggest the largest sync interval and an lr ceiling (never applied).")
+@click.option("--ess-min", type=click.FloatRange(0, 1), default=None,
+              help="ESS/n every qualifying lag bucket must keep [default: AdviseConfig.ess_min].")
+@click.option("--lr", default=None, help="The run's learning rate, e.g. 5e-6 (exact decimal), for the lr ceiling.")
+@click.option("--updates-per-pass", type=click.IntRange(min=1), default=None,
+              help="Optimizer updates per pass over one generation (TRL steps_per_generation; "
+                   "verl train_batch_size / ppo_mini_batch_size), to translate the interval into knobs.")
+@click.option("--target-interval", type=click.IntRange(min=1), default=None,
+              help="Also give the lr ceiling at this sync interval (by the scaling law).")
+def doctor(workspace: str, eps: tuple[float, ...], json_out: str | None, md_out: str | None, advise: bool,
+           ess_min: float | None, lr: str | None, updates_per_pass: int | None, target_interval: int | None):
     """Diagnose a run: how much of your off-policy signal is staleness vs engine mismatch, per lag."""
     import json as _json
+    from fractions import Fraction
 
     from martingale.diagnostics import attribute, decompose, render_markdown
+    from martingale.diagnostics.advise import AdviseConfig, advise_decomposition
     from martingale.record import TokenLedger
 
     ws = Path(workspace)
     if not (ws / "tokens.db").exists():
         click.echo(f"No token record at {ws / 'tokens.db'}", err=True)
         sys.exit(1)
-    d = decompose(TokenLedger(ws / "tokens.db", readonly=True), eps=tuple(eps))
+    if not advise and any(v is not None for v in (ess_min, lr, updates_per_pass, target_interval)):
+        raise click.UsageError("--ess-min, --lr, --updates-per-pass and --target-interval need --advise")
+    if target_interval is not None and lr is None:
+        raise click.UsageError("--target-interval gives an lr ceiling and needs --lr")
+    lr_exact = None
+    if lr is not None:
+        try:
+            lr_exact = Fraction(lr)
+        except (ValueError, ZeroDivisionError):
+            raise click.BadParameter(f"{lr!r} is not a number", param_hint="--lr") from None
+        if lr_exact <= 0:
+            raise click.BadParameter(f"{lr} must be positive", param_hint="--lr")
+    ledger = TokenLedger(ws / "tokens.db", readonly=True)
+    try:
+        d = decompose(ledger, eps=tuple(eps))
+    finally:
+        ledger.close()
     d["attribution"] = attribute(d)
     md = render_markdown(d)
+    if advise:
+        cfg = AdviseConfig() if ess_min is None else AdviseConfig(ess_min=ess_min)
+        advice = advise_decomposition(d, cfg, lr=lr_exact, updates_per_pass=updates_per_pass,
+                                      target_interval=target_interval)
+        d["advice"] = advice.to_dict()
+        md += "\n## Advice\n\n" + "".join(f"- {line}\n" for line in advice.lines())
     click.echo(md, nl=False)
     if json_out:
         Path(json_out).write_text(_json.dumps(d, indent=1))

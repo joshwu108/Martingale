@@ -114,11 +114,17 @@ Every result is scoped to the constraints below.
   unmatched 1%, 32 lag-0 tokens minimum) are heuristics chosen before any real
   run existed. They are configuration, not findings, and should be revisited
   against the first vLLM run.
-- `stale_server` is a proxy. The record holds the trainer's weights digest at
-  generation time, not the inference server's, so a server serving old weights
-  is inferred from the lag-0 floor jumping, not observed. `weights_unchanged`
-  is exact but detects a trainer whose weights did not change, which is a
-  different fault.
+- `stale_server` is a proxy except where the replica reports what it received.
+  The record holds the trainer's weights digest at generation time. Since
+  2026-10-13 a rollout revision can also hold `received_weights_digest`, the
+  digest the rollout replica computed over the payload its last sync delivered
+  (the verl runner reports it; the TRL adapter does not). A mismatch there is
+  an observed `stale_server` (evidence `observed: true`). It proves what
+  arrived, before vLLM's loader runs, not that the loader applied it, and it is
+  CPU-tested only until the next GPU run. Without that digest the revision
+  makes no sync claim and a server serving old weights is still inferred from
+  the lag-0 floor (`observed: false`). `weights_unchanged` is exact but detects
+  a trainer whose weights did not change, which is a different fault.
 - Percentiles in the live diagnosis come from a bounded reservoir (4096 ratios
   per lag bucket); means, maxima and shares are exact.
 - The monitor ran on four real runs. `stale_server` now fires on confident
@@ -141,6 +147,44 @@ Every result is scoped to the constraints below.
   abs log ratio at temperature 1) is one task and one model; the task saturates
   the reward and the recipe collapses the policy within 12 steps, so the floor
   numbers at steps 8 and 12 are measured on a degenerate policy.
+
+## Knob advisor (`martingale doctor --advise`, `diagnostics/advise.py`)
+
+- **A suggestion, never a setting.** Nothing reads the advice back into a trainer;
+  the doctor does not check whether a later run followed it.
+- **No promise that the suggested knobs train well.** The advice keeps a statistic
+  (token-level ESS/n per lag bucket) above a threshold. ESS/n says how many tokens
+  the importance weights effectively use; it says nothing about reward, accuracy,
+  collapse, or whether the clipped objective was already compensating.
+- **Nothing beyond the lags that ran.** `within_observed` means every qualifying lag
+  passed, not that a larger interval would. The sync interval is never
+  extrapolated; only the lr ceiling at `--target-interval` is, and it is marked
+  "not measured" unless the target is the passing interval.
+- **The lr ceiling is a published empirical law applied, not measured here.**
+  Song et al. (arXiv:2607.01083) fit "largest stable lr ~ 1/S" on vanilla GRPO
+  sweeps and prove an O(S·η) upper bound on the staleness bias under local
+  regularity conditions. Martingale holds S·η at the budget that passed in the
+  record; none of the committed runs varied S or η, so no record here tests the
+  law, its constant, or whether it holds for PPO, other models, or our recipes.
+- **An ESS failure is not shown to be lr-sensitive.** Cutting the lr in proportion
+  to the interval assumes the failing lag fails from staleness bias. A failure from
+  the engine floor or from sampling noise does not respond to a lower lr, and
+  the record cannot tell these apart. The number is a heuristic budget, not a
+  measured stability limit.
+- **The threshold is calibrated on five records, four runs, one model.**
+  0.5 falls in the gap between the sorted bucket values in `docs/advise.md`
+  (0.904 and up versus 0.351 and 0.398). The split comes from that gap, not from
+  labels given beforehand; only one of the two low buckets has a known cause.
+  Any value in (0.398, 0.904] splits them the same way. Buckets
+  hold 93 to 930 tokens, and an ESS from ~100 tokens moves with its largest few
+  ratios: the replay run's lag-2 bucket fails while lags 1 and 3 pass.
+- **The knob translation assumes lag comes from the knobs.** S // U iterations and
+  S - U async steps hold for a recipe whose lag is exactly U·K-1 or U+a-1; in-flight
+  weight updates, partial rollouts, or a framework that counts async in generations
+  rather than optimizer steps change the mapping, and the doctor cannot see which.
+- **Exact where the inputs are.** Shares, intervals and learning rates are exact;
+  ESS/n is a float64 statistic and is compared as one, so a bucket within float
+  rounding of the threshold can land on either side.
 
 ## Replayed rows (`src/martingale/record/replay.py`, replay-buffer provenance)
 
