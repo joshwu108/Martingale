@@ -29,6 +29,7 @@ from martingale.integrations._common import (
     ContentKey,
     Generation,
     _check_digestable,
+    _hole_rows,
     _prefix_lengths,
     _tokenizer_bytes,
     apply_sampler_overrides,
@@ -43,9 +44,18 @@ from martingale.record import Recorder, SamplerConfig, temperature_applied_for, 
 from martingale.record.revision import LLMRevision, tokenizer_digest
 
 LENGTH_KEY = "martingale_completion_length"
+SKIP_ROW_ID = -1          # a refused rollout row: the loss path skips it (as TRL's unregistered replay rows)
 ACTOR_TEMPERATURE_APPLIED = True   # verl 0.9.1 transformer_impl.py:98-103; torch_functional.py:679-681
 __all__ = ["MartingaleVerlRecorder", "MartingaleMonitor", "wrap_ppo_loss", "MartingaleVeRLCallback",
            "sampler_from_rollout_config"]
+
+
+def _completion_lengths(response_mask: Any) -> tuple[list[bool], list[int]]:
+    """(hole rows, completion lengths) of a right-padded response mask; a hole row's length is 0,
+    because slicing it by sum() would put tool tokens at the model's score positions."""
+    holes = _hole_rows(response_mask)
+    sums = response_mask.to("cpu").long().sum(dim=1).tolist()
+    return holes, [0 if hole else int(x) for hole, x in zip(holes, sums)]
 
 
 def _cfg(cfg: Any, key: str) -> Any:
@@ -98,6 +108,12 @@ class MartingaleVerlRecorder:
     Row ids follow the TRL adapter's contract (``martingale.integrations._common``): an id packs
     the rollout's ``actor_id`` with that rank's counter and is bound in the ledger's row-id table,
     so a worker process with its own recorder over the same workspace resolves it there.
+
+    A multi-turn row whose ``response_mask`` has holes (tool text inside the completion,
+    verl/experimental/agent_loop/agent_loop.py:575-586) is refused: the token record cannot hold
+    an unscored token inside a completion without moving score positions. It is not recorded, its
+    row id is ``SKIP_ROW_ID`` and the loss path skips it (``stats["mask_hole_rows"]`` at rollout,
+    ``stats["skipped_rows"]`` per loss row).
     """
 
     def __init__(self, workspace: str, tokenizer: Any, *, logprob_dtype: str = "f32",
@@ -111,17 +127,19 @@ class MartingaleVerlRecorder:
         self._rollout = rollout_config
         self._record_scores = record_scores
         self._weights: dict[int, str] = {}
-        self._revisions: dict[tuple[int, str], LLMRevision] = {}
+        self._revisions: dict[tuple[int, str, str | None], LLMRevision] = {}
         self._next_local: dict[int, int] = {}     # per rank; seeded from the ledger on first use
         self._generations: list[Generation] = []
         self._cross_content_next: dict[ContentKey, int] = {}
         self.stats: dict[str, int] = {"generation_calls": 0, "sequences": 0, "tokens": 0,
                                       "score_calls": 0, "scored_tokens": 0, "scored_sequences": 0,
                                       "unmatched_rows": 0, "nan_rows": 0, "duplicate_scores": 0,
-                                      "revisions": 0}
+                                      "revisions": 0, "mask_hole_rows": 0, "skipped_rows": 0,
+                                      "verified_syncs": 0, "unverified_syncs": 0, "sync_mismatches": 0}
 
-    def _revision(self, step: int, weights: Mapping[str, Any] | Any, mode: str) -> LLMRevision:
-        key = (step, mode)
+    def _revision(self, step: int, weights: Mapping[str, Any] | Any, mode: str,
+                  received: str | None = None) -> LLMRevision:
+        key = (step, mode, received)
         if key in self._revisions:
             return self._revisions[key]
         if step not in self._weights:
@@ -131,7 +149,8 @@ class MartingaleVerlRecorder:
             if len(self._weights) > 8:
                 self._weights.pop(min(self._weights))
         sampler = apply_sampler_overrides(sampler_from_rollout_config(self._rollout, mode), self._overrides, mode)
-        rev = self.recorder.publish_revision(self._weights[step], self._tok_digest, sampler, step=step)
+        rev = self.recorder.publish_revision(self._weights[step], self._tok_digest, sampler, step=step,
+                                             received_weights_digest=received)
         self._revisions[key] = rev
         self.stats["revisions"] += 1
         return rev
@@ -148,9 +167,18 @@ class MartingaleVerlRecorder:
     def _tensor_batch(batch: Any) -> Any:
         return batch.batch if hasattr(batch, "batch") else batch
 
+    def _count_sync(self, rev: LLMRevision) -> None:
+        verdict = rev.sync_verified
+        key = "unverified_syncs" if verdict is None else "verified_syncs" if verdict else "sync_mismatches"
+        self.stats[key] += 1
+
     def on_rollout(self, batch: Any, *, step: int, weights: Mapping[str, Any] | Any,
-                   actor_id: int = 0) -> Any:
-        """Record engine probabilities and add a row-id tensor to DataProto.batch."""
+                   actor_id: int = 0, received_weights_digest: str | None = None) -> Any:
+        """Record engine probabilities and add a row-id tensor to DataProto.batch.
+
+        ``received_weights_digest`` is the rollout replica's digest of the weights its last sync
+        delivered (``martingale.record.ReceivedWeights``). It is bound into the rollout revision as
+        reported, matching or not; without it the revision makes no sync claim (``unverified_syncs``)."""
         import torch
 
         data = self._tensor_batch(batch)
@@ -160,13 +188,15 @@ class MartingaleVerlRecorder:
         mask = data["response_mask"]
         prompt_mask = data["attention_mask"][:, :prompt.shape[1]]
         plen = _prefix_lengths(prompt_mask, "suffix")
-        clen = _prefix_lengths(mask, "prefix")
+        holes, clen = _completion_lengths(mask)
         if data["rollout_log_probs"].shape != response.shape:
             raise ValueError("rollout_log_probs must match responses")
-        rev = self._revision(int(step), weights, "engine_sampling")
+        rev = self._revision(int(step), weights, "engine_sampling", received_weights_digest)
+        self._count_sync(rev)
         n = response.shape[0]
         local_ids = self._allocate(actor_id, n)
-        row_ids = [pack_row_id(actor_id, i) for i in local_ids]
+        row_ids = [SKIP_ROW_ID if hole else pack_row_id(actor_id, i) for hole, i in zip(holes, local_ids)]
+        self.stats["mask_hole_rows"] += sum(holes)
         by_id: dict[int, str] = {}
         by_content: dict[ContentKey, list[str]] = {}
         bound: list[tuple[int, int, str]] = []
@@ -175,7 +205,7 @@ class MartingaleVerlRecorder:
         self.stats["generation_calls"] += 1
         for row in range(n):
             tokens = [int(x) for x in response[row, :clen[row]].tolist()]
-            if not tokens:
+            if holes[row] or not tokens:
                 continue
             probs = lp[row][:clen[row]]
             if any(not math.isfinite(x) for x in probs):
@@ -237,8 +267,11 @@ class MartingaleVerlRecorder:
         prompt_mask = data["attention_mask"][:, :prompt.shape[1]]
         plen = _prefix_lengths(prompt_mask, "suffix")
         saved_lengths = data.get(LENGTH_KEY)
-        clen = (_prefix_lengths(data["response_mask"], "prefix") if saved_lengths is None
-                else [int(x) for x in saved_lengths.detach().to("cpu").tolist()])
+        if saved_lengths is None:            # no on_rollout length: a hole row has no safe slice
+            holes, clen = _completion_lengths(data["response_mask"])
+        else:
+            holes = [False] * response.shape[0]
+            clen = [int(x) for x in saved_lengths.detach().to("cpu").tolist()]
         if logps.shape != response.shape:
             raise ValueError("training logps must match responses")
         row_ids = data.get(ROW_ID_KEY)
@@ -248,9 +281,13 @@ class MartingaleVerlRecorder:
         rev = None
         matched = 0
         for row in range(response.shape[0]):
+            row_id = None if row_ids is None else int(row_ids[row])
+            if holes[row] or (row_id is not None and row_id < 0):
+                self.stats["skipped_rows"] += 1
+                continue
             key = (tuple(int(x) for x in prompt[row, prompt.shape[1] - plen[row]:].tolist()),
                    tuple(int(x) for x in response[row, :clen[row]].tolist()))
-            digest = self._lookup(None if row_ids is None else int(row_ids[row]), key)
+            digest = self._lookup(row_id, key)
             if digest is None:
                 self.stats["unmatched_rows"] += 1
                 continue
@@ -270,8 +307,12 @@ class MartingaleVerlRecorder:
         return matched
 
     def head(self) -> str:
+        import warnings
+        if self.stats["mask_hole_rows"]:
+            warnings.warn(f"martingale: {self.stats['mask_hole_rows']} multi-turn verl rows with tool tokens inside "
+                          "the response were refused and are not in the record; see flight.stats",
+                          RuntimeWarning, stacklevel=2)
         if self.stats["unmatched_rows"] or self.stats["nan_rows"]:
-            import warnings
             warnings.warn("martingale: skipped or unmatched verl rows; see flight.stats", RuntimeWarning, stacklevel=2)
         return self.recorder.ledger.head()
 

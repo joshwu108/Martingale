@@ -7,6 +7,7 @@ from martingale.record.revision import (
     SAMPLER_KEYS,
     SAMPLER_OPTIONAL_KEYS,
     LLMRevision,
+    ReceivedWeights,
     SamplerConfig,
     temperature_applied_for,
     tokenizer_digest,
@@ -16,7 +17,7 @@ from martingale.record.store import TokenLedger
 from martingale.record.tokens import ScoreRecord, SequenceRecord, TokenRecord, build_sequence, prompt_digest
 
 __all__ = [
-    "GENESIS_DIGEST", "LLMRevision", "LOGPROBS_MODES", "SAMPLER_KEYS", "SAMPLER_OPTIONAL_KEYS", "OriginNotFound", "ProtocolViolation", "Recorder", "ReplayProvenance",
+    "GENESIS_DIGEST", "LLMRevision", "LOGPROBS_MODES", "SAMPLER_KEYS", "SAMPLER_OPTIONAL_KEYS", "OriginNotFound", "ProtocolViolation", "ReceivedWeights", "Recorder", "ReplayProvenance",
     "SamplerConfig", "ScoreRecord",
     "SequenceBuilder", "SequenceRecord", "TokenLedger", "TokenRecord", "bits_to_fraction",
     "build_sequence", "float_bits", "parse_bits", "prompt_digest", "temperature_applied_for", "tokenizer_digest",

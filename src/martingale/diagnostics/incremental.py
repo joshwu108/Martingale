@@ -120,6 +120,10 @@ class StepDiagnosis:
     cumulative_by_provenance: dict[str, list[dict]] = field(default_factory=dict)
     floor_withheld: str | None = None        # why the lag-0 floor is not read (comparability.py); None = it is
     floor_caveat: str | None = None          # the floor is read, but temperature scaling is unknown on a side
+    # generation revisions first seen in this update whose replica-reported received digest differs
+    # from the weights digest (record/revision.py sync_verified), and how many reported none
+    received_mismatches: list[dict] = field(default_factory=list)
+    unverified_generation_revisions: int = 0
 
     def metrics(self, prefix: str = "martingale/") -> dict[str, float]:
         """Flat float metrics for a trainer log (W&B, TensorBoard). Informational floats."""
@@ -150,6 +154,8 @@ class StepDiagnosis:
             out[prefix + f"ess_fraction_lag{b['lag']}"] = f["ess_fraction"]
             out[prefix + f"mean_abs_log_ratio_lag{b['lag']}"] = f["mean_abs_log_ratio"]
             out[prefix + f"tokens_lag{b['lag']}"] = float(b["n_tokens"])
+        out[prefix + "received_weights_mismatches"] = float(len(self.received_mismatches))
+        out[prefix + "unverified_generation_revisions"] = float(self.unverified_generation_revisions)
         out[prefix + "span_fraction"] = self.span_fraction
         out[prefix + "negative_lag_tokens"] = float(self.n_negative_lag)
         return out
@@ -168,6 +174,8 @@ class IncrementalDiagnosis:
         self._step_cache: dict[str, int] = {}
         self._weights_cache: dict[str, str] = {}
         self._sampler_cache: dict[str, SamplerConfig] = {}
+        self._received_cache: dict[str, str | None] = {}
+        self._generation_revisions: set[str] = set()
         self._unscored: set[str] = set()
 
     def _sequence(self, digest: str) -> SequenceRecord:
@@ -181,13 +189,30 @@ class IncrementalDiagnosis:
             self._step_cache[digest] = rev.step
             self._weights_cache[digest] = rev.weights_digest
             self._sampler_cache[digest] = rev.sampler
+            self._received_cache[digest] = rev.received_weights_digest
         return self._step_cache[digest], self._weights_cache[digest]
+
+    def _sync_status(self, digests: list[str]) -> tuple[list[dict], int]:
+        """Mismatches and unreported syncs among generation revisions not seen before."""
+        mismatches, unverified = [], 0
+        for d in digests:
+            if d in self._generation_revisions:
+                continue
+            self._generation_revisions.add(d)
+            step, wd = self._revision(d)
+            received = self._received_cache[d]
+            if received is None:
+                unverified += 1
+            elif received != wd:
+                mismatches.append({"revision_step": step, "weights_digest": wd, "received_weights_digest": received})
+        return mismatches, unverified
 
     def update(self, step: int) -> StepDiagnosis:
         from martingale.diagnostics.staleness import attribute
 
         new_seqs = self._ledger.sequences_since(self._seq_rowid)
         weights: list[str] = []
+        generation_revisions: list[str] = []
         spanning = 0
         for rid, seq in new_seqs:
             self._seq_rowid = rid
@@ -197,6 +222,8 @@ class IncrementalDiagnosis:
                 _s, wd = self._revision(d)
                 if wd not in weights:
                     weights.append(wd)
+                if d not in generation_revisions:
+                    generation_revisions.append(d)
             if len(seq.revision_digests) > 2:
                 spanning += 1
         step_buckets: dict[int, RunningBucket] = {}
@@ -233,6 +260,7 @@ class IncrementalDiagnosis:
         lag0 = step_buckets[0].summary(self._eps) if 0 in step_buckets and withheld is None else None
         floor = None if lag0 is None else Fraction(lag0["mean_abs_log_ratio"])
         partial: dict = {"by_lag": by_lag, "lag0_floor": lag0}
+        received_mismatches, unverified = self._sync_status(generation_revisions)
         return StepDiagnosis(
             step=step, n_new_scores=n_new, n_new_sequences=len(new_seqs), by_lag=by_lag,
             cumulative_by_lag=[self._cumulative[k].summary(self._eps) for k in sorted(self._cumulative)],
@@ -242,6 +270,7 @@ class IncrementalDiagnosis:
             lag0_score_steps=sorted(lag0_score_steps),
             by_provenance=self._by_provenance(step_prov), cumulative_by_provenance=self._by_provenance(self._cumulative_prov),
             floor_withheld=withheld, floor_caveat=caveat,
+            received_mismatches=received_mismatches, unverified_generation_revisions=unverified,
         )
 
     def _by_provenance(self, table: dict[tuple[str, int], RunningBucket]) -> dict[str, list[dict]]:

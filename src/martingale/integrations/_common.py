@@ -95,6 +95,16 @@ def _prefix_lengths(mask: torch.Tensor, side: str) -> list[int]:
     return [int(x) for x in lengths.tolist()]
 
 
+def _hole_rows(mask: torch.Tensor) -> list[bool]:
+    """Per row of a right-padded mask: True when it is not 1..1 0..0 (a multi-turn response whose
+    tool text is masked out inside the completion)."""
+    import torch
+
+    m = mask.to("cpu").long()
+    expected = (torch.arange(m.size(1)).unsqueeze(0) < m.sum(dim=1, keepdim=True)).long()
+    return [bool(x) for x in (m != expected).any(dim=1).tolist()]
+
+
 def _check_digestable(state_dict: dict) -> None:
     for name, t in state_dict.items():
         if getattr(t, "is_meta", False) or (hasattr(t, "numel") and t.numel() == 0):

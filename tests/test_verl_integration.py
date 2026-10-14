@@ -64,15 +64,95 @@ def test_row_ids_survive_shuffle_and_nan_is_skipped(flight, weights):
     assert flight.on_train_step(batch, torch.zeros(2, 3), step=0, weights=weights) == 1
 
 
-def test_missing_engine_logps_and_impure_mask_fail(flight, weights):
+def test_missing_engine_logps_fail(flight, weights):
     batch = make_batch()
     batch.batch.pop("rollout_log_probs")
     with pytest.raises(ValueError, match="rollout_log_probs"):
         flight.on_rollout(batch, step=0, weights=weights)
+
+
+def multi_turn_batch():
+    """Row 0 is a multi-turn response: model 21, tool 90 91 (mask 0), model 22. Row 1 is single-turn."""
     batch = make_batch()
-    batch.batch["response_mask"][0] = torch.tensor([1, 0, 1])
-    with pytest.raises(ValueError, match="pure"):
-        flight.on_rollout(batch, step=0, weights=weights)
+    batch.batch["responses"] = torch.tensor([[21, 90, 91, 22], [13, 14, 15, 0]])
+    batch.batch["response_mask"] = torch.tensor([[1, 0, 0, 1], [1, 1, 1, 0]])
+    batch.batch["attention_mask"] = torch.tensor([[0, 1, 1, 1, 1, 1, 1], [1, 1, 1, 1, 1, 1, 0]])
+    batch.batch["rollout_log_probs"] = torch.tensor([[-1.0, 0.0, 0.0, -2.0], [-3.0, -4.0, -5.0, 0.0]])
+    batch.batch["advantages"] = torch.tensor([[0.5] * 4, [-0.5] * 4])
+    return batch
+
+
+def test_mask_hole_rows_are_refused_and_the_rest_recorded(flight, weights, tmp_path):
+    batch = multi_turn_batch()
+    flight.on_rollout(batch, step=0, weights=weights)
+    assert flight.stats["mask_hole_rows"] == 1 and flight.stats["sequences"] == 1
+    assert batch.batch["martingale_row_id"].tolist() == [-1, 1]
+    assert batch.batch["martingale_completion_length"].tolist() == [0, 3]
+    seqs = list(flight.recorder.ledger.all_sequences())
+    assert [[t.token_id for t in s.tokens] for s in seqs] == [[13, 14, 15]]
+
+    for key, value in batch.batch.items():               # _balance_batch reorders; the sentinel travels
+        batch.batch[key] = value[[1, 0]]
+    lp = batch.batch["rollout_log_probs"] - 0.25
+    assert flight.on_train_step(batch, lp, step=0, weights=weights) == 1
+    assert flight.stats["skipped_rows"] == 1 and flight.stats["unmatched_rows"] == 0
+    assert flight.stats["scored_tokens"] == 3
+    with pytest.warns(RuntimeWarning, match="tool tokens"):
+        head = flight.head()
+    report = verify_export(flight.recorder.export_for_checker(tmp_path / "exp"), expected_head=head)
+    assert report["ok"], report["errors"]
+
+
+def test_mask_hole_rows_without_row_ids_are_skipped_not_misaligned(flight, weights):
+    """Content fallback has no saved length either: a hole row is skipped, never sliced by sum()."""
+    batch = multi_turn_batch()
+    flight.on_rollout(batch, step=0, weights=weights)
+    for key in ("martingale_row_id", "martingale_completion_length"):
+        batch.batch.pop(key)
+    assert flight.on_train_step(batch, batch.batch["rollout_log_probs"], step=0, weights=weights) == 1
+    assert flight.stats["skipped_rows"] == 1 and flight.stats["unmatched_rows"] == 0
+
+
+def test_all_rows_with_holes_records_nothing_and_does_not_raise(flight, weights):
+    batch = multi_turn_batch()
+    batch.batch["response_mask"][1] = torch.tensor([0, 1, 1, 0])
+    flight.on_rollout(batch, step=0, weights=weights)
+    assert flight.stats["mask_hole_rows"] == 2 and flight.stats["sequences"] == 0
+    assert batch.batch["martingale_row_id"].tolist() == [-1, -1]
+
+
+class TestReceivedWeights:
+    """2026-10-13: the rollout revision carries the replica's digest of what the sync delivered."""
+
+    def test_reported_digest_is_bound_into_the_rollout_revision_only(self, flight, weights):
+        from martingale.record import weights_digest
+
+        batch = make_batch()
+        expected = weights_digest(weights)
+        flight.on_rollout(batch, step=0, weights=weights, received_weights_digest=expected)
+        flight.on_train_step(batch, batch.batch["rollout_log_probs"], step=0, weights=weights)
+        revs = {r.sampler.logprobs_source: r for r in flight.recorder.ledger.all_revisions()}
+        assert revs["engine_sampling"].received_weights_digest == expected
+        assert revs["engine_sampling"].sync_verified is True
+        assert revs["trainer_scores"].received_weights_digest is None
+        assert flight.stats["verified_syncs"] == 1 and flight.stats["unverified_syncs"] == 0
+
+    def test_unreported_is_never_claimed(self, flight, weights):
+        flight.on_rollout(make_batch(), step=0, weights=weights)
+        rev = next(flight.recorder.ledger.all_revisions())
+        assert rev.received_weights_digest is None and rev.sync_verified is None
+        assert flight.stats["unverified_syncs"] == 1 and flight.stats["verified_syncs"] == 0
+
+    def test_mismatch_is_recorded_as_reported(self, flight, weights):
+        flight.on_rollout(make_batch(), step=0, weights=weights, received_weights_digest="c" * 64)
+        rev = next(flight.recorder.ledger.all_revisions())
+        assert rev.received_weights_digest == "c" * 64 and rev.sync_verified is False
+        assert flight.stats["sync_mismatches"] == 1
+
+    def test_same_step_different_reports_are_distinct_revisions(self, flight, weights):
+        flight.on_rollout(make_batch(), step=0, weights=weights, received_weights_digest="c" * 64)
+        flight.on_rollout(make_batch(), step=0, weights=weights)
+        assert len(list(flight.recorder.ledger.all_revisions())) == 2
 
 
 def test_sharded_weights_fail(flight, weights):

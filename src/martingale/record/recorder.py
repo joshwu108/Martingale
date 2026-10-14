@@ -96,16 +96,18 @@ class Recorder:
 
     def publish_revision(self, weights: Mapping[str, Any] | str, tokenizer: bytes | str,
                          sampler: SamplerConfig, step: int, *, parent_digest: str | None = None,
-                         weights_uri: str | None = None) -> LLMRevision:
+                         weights_uri: str | None = None, received_weights_digest: str | None = None) -> LLMRevision:
         """`weights` is a state dict (digested here) or a precomputed weights digest;
         `tokenizer` is tokenizer.json bytes or a precomputed digest. Parent defaults to the
-        previously published revision."""
+        previously published revision. `received_weights_digest` is what the rollout replica
+        reported for its last sync (`ReceivedWeights`); leave it None when it reported nothing."""
         wd = weights if isinstance(weights, str) else weights_digest(weights)
         td = tokenizer if isinstance(tokenizer, str) else tokenizer_digest(tokenizer)
         parent = parent_digest if parent_digest is not None else (
             self._latest.digest if self._latest is not None else GENESIS_DIGEST)
         rev = LLMRevision(weights_digest=wd, tokenizer_digest=td, sampler=sampler, step=step,
-                          parent_digest=parent, weights_uri=weights_uri)
+                          parent_digest=parent, weights_uri=weights_uri,
+                          received_weights_digest=received_weights_digest)
         self.ledger.publish_revision(rev)
         self._latest = rev
         return rev

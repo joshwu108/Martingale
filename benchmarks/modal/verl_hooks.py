@@ -20,12 +20,19 @@ the first loss call after it hash the same tensors under the same step.
 The worker gathers weights right after each applied step, never inside the loss:
 a state_dict() between forward and backward runs FSDP2's pre-save hook, which
 reshards the root group while autograd still holds its unsharded parameters.
+
+The rollout replica digests the weights each sync delivers (verl_served.py, in the
+vLLM worker process); the driver asks for that digest before recording a rollout and
+binds it into the rollout revision. A replica that reports none leaves the revision
+without a sync claim. The worker times its row-id ledger lookups apart from the rest
+of scoring (``status()["row_lookup"]``).
 """
 from __future__ import annotations
 
 import json
 import math
 import random
+import time
 from collections.abc import Callable, Mapping
 from functools import partial
 from pathlib import Path
@@ -33,7 +40,7 @@ from typing import Any
 
 DATA_SOURCE = "martingale/addition"
 ROLLOUT_KEYS = ("prompts", "responses", "attention_mask", "response_mask", "rollout_log_probs")
-SCORE_KEYS = ("score_calls", "scored_tokens", "scored_sequences", "unmatched_rows", "duplicate_scores")
+SCORE_KEYS = ("score_calls", "scored_tokens", "scored_sequences", "unmatched_rows", "duplicate_scores", "skipped_rows")
 METRIC_PREFIX = "martingale/"
 
 
@@ -146,6 +153,55 @@ def mask_holes(mask: Any) -> int:
     return int((m != expected).any(dim=1).sum())
 
 
+def receive_with_digest(ext: Any, receive: Callable[[], Any]) -> Any:
+    """Run one sync's receive on a vLLM worker extension (verl's vLLMColocateWorkerExtension, in the
+    vLLM worker process) with its per-bucket loader wrapped to digest each (name, tensor) as it
+    arrives, before the engine loads it. Leaves ``ext._martingale_received``: the digest of the whole
+    payload, or None when the sync raised or delivered nothing (the replica then claims no sync)."""
+    from martingale.record import ReceivedWeights
+
+    received = ReceivedWeights()
+    ext._martingale_received = None
+    load = ext._update_weights
+
+    broken = False
+
+    def digesting(weights, *args, **kwargs):
+        nonlocal broken
+        weights = list(weights)
+        if not broken:
+            try:
+                received.add(weights)
+            except ValueError:           # a name sent twice: withhold the claim, never break the sync
+                broken = True
+        return load(weights, *args, **kwargs)
+
+    ext._update_weights = digesting
+    try:
+        result = receive()
+    finally:
+        del ext._update_weights
+    ext._martingale_received = None if broken else received.digest()
+    return result
+
+
+def received_digest(reports: list[list[str | None]]) -> str | None:
+    """One digest for the reporting vLLM workers of every server (``MartingaleHttpServer.martingale_received``
+    returns one report per TP worker of the server's engine; with data parallelism > 1 that is one DP
+    shard per server, not every worker). None when no worker reports: no sync is claimed. When the
+    workers disagree, or some report and some cannot, at least one is stale: the result is a digest of
+    the sorted reports, which no weights can have, so the revision records a mismatch and the monitor's
+    observed stale_server fires instead of the run aborting."""
+    flat = [r for server in reports for r in server]
+    if all(r is None for r in flat):
+        return None
+    distinct = sorted({"none" if r is None else r for r in flat})
+    if len(distinct) == 1:
+        return distinct[0]
+    import hashlib
+    return hashlib.blake2b(("disagree:" + ",".join(distinct)).encode("ascii"), digest_size=32).hexdigest()
+
+
 def _plain(value: Any) -> Any:
     try:
         return float(value)
@@ -166,6 +222,33 @@ class WorkerHooks:
         self.loss_time_gathers = 0
         self._pending: dict[str, Any] | None = None   # this step's weights, until the recorder digests them
         self.loss = {"calls": 0, "rows": 0, "calls_with_row_ids": 0, "live_calls": 0, "detached_calls": 0}
+        self.row_lookup = {"calls": 0, "found": 0, "seconds": 0.0, "max_seconds": 0.0, "score_seconds": 0.0}
+
+    def _time_scoring(self) -> None:
+        """Time the ledger's row-id lookup (the worker's maps are empty, so every row id goes there)
+        and, around it, all of on_train_step; each timed in this process, per call."""
+        ledger, flight, stats = self.flight.recorder.ledger, self.flight, self.row_lookup
+        lookup, score = ledger.row_digest, flight.on_train_step
+
+        def row_digest(*args, **kwargs):
+            started = time.perf_counter()
+            digest = lookup(*args, **kwargs)
+            elapsed = time.perf_counter() - started
+            stats["calls"] += 1
+            stats["found"] += digest is not None
+            stats["seconds"] += elapsed
+            stats["max_seconds"] = max(stats["max_seconds"], elapsed)
+            return digest
+
+        def on_train_step(*args, **kwargs):
+            started = time.perf_counter()
+            try:
+                return score(*args, **kwargs)
+            finally:
+                stats["score_seconds"] += time.perf_counter() - started
+
+        ledger.row_digest = row_digest
+        flight.on_train_step = on_train_step
 
     @classmethod
     def install(cls, training_worker: Any, *, workspace: str, tokenizer_digest: str,
@@ -174,6 +257,7 @@ class WorkerHooks:
 
         flight = MartingaleVerlRecorder(workspace, tokenizer_digest, sampler_overrides=sampler_overrides)
         hooks = cls(flight, training_worker.engine)
+        hooks._time_scoring()
         hooks._pending = full_state(hooks.engine)
         base = training_worker.loss_fn
         if not isinstance(base, partial):
@@ -218,7 +302,8 @@ class WorkerHooks:
 
     def status(self) -> dict:
         return {"applied_steps": self.applied_steps, "skipped_steps": self.skipped_steps,
-                "loss_time_gathers": self.loss_time_gathers, "loss": dict(self.loss), "stats": dict(self.flight.stats)}
+                "loss_time_gathers": self.loss_time_gathers, "loss": dict(self.loss), "stats": dict(self.flight.stats),
+                "row_lookup": dict(self.row_lookup)}
 
     def close(self) -> None:
         self.flight.recorder.ledger.close()
@@ -256,18 +341,31 @@ class WorkerRPC:
         return self.wg.martingale_status()[0]
 
 
+class ReplicaRPC:
+    """The rollout replicas' received-weights reports (verl_served.MartingaleHttpServer on each server)."""
+
+    def __init__(self, servers: list[Any]) -> None:
+        self.servers = servers
+
+    def received_digest(self) -> str | None:
+        import ray
+        return received_digest(ray.get([s.martingale_received.remote() for s in self.servers]))
+
+
 class DriverHooks:
     """Instance-patches a RayPPOTrainer after init_workers.
 
     ``worker`` exposes snapshot() -> (applied_steps, full weights) and status() -> dict, the
-    two RPCs of the worker subclass in verl_grpo_vllm.py.
+    two RPCs of the worker subclass in verl_grpo_vllm.py. ``replica`` exposes received_digest():
+    the digest the rollout replica computed over the weights its last sync delivered, or None.
     """
 
-    def __init__(self, flight: Any, monitor: Any, view: FlightView, worker: Any) -> None:
+    def __init__(self, flight: Any, monitor: Any, view: FlightView, worker: Any, replica: Any) -> None:
         self.flight = flight
         self.monitor = monitor
         self.view = view
         self.worker = worker
+        self.replica = replica
         self.rollouts: list[dict] = []
         self.updates: list[dict] = []
         self.last_status: dict = {}
@@ -290,11 +388,13 @@ class DriverHooks:
         missing = [k for k in ROLLOUT_KEYS if k not in keys]
         holes = mask_holes(data["response_mask"]) if "response_mask" in keys else None
         step, weights = self.worker.snapshot()
+        received = self.replica.received_digest()
         entry = {"step": step, "rows": int(data["responses"].shape[0]) if "responses" in keys else None,
                  "response_width": int(data["responses"].shape[1]) if "responses" in keys else None,
-                 "keys": keys, "missing": missing, "mask_hole_rows": holes}
+                 "keys": keys, "missing": missing, "mask_hole_rows": holes, "received_weights_digest": received}
         self.rollouts.append(entry)
-        self.flight.on_rollout(output, step=step, weights=weights)   # raises on missing keys or holes
+        # raises on missing keys; refuses hole rows (row id -1)
+        self.flight.on_rollout(output, step=step, weights=weights, received_weights_digest=received)
         entry["row_ids"] = [int(x) for x in data[ROW_ID_KEY].tolist()]
         return output
 
@@ -346,6 +446,12 @@ def adapter_checks(*, rollouts: list[dict], updates: list[dict], worker: dict, r
         source = sampler.get("logprobs_source") or sampler["logprobs_mode"]
         by_step.setdefault(int(rev["step"]), {})[source] = rev["weights_digest"]
     paired = {s: d for s, d in by_step.items() if {"engine_sampling", "trainer_scores"} <= d.keys()}
+    synced = [r for r in revisions if (r["sampler"].get("logprobs_source") or r["sampler"]["logprobs_mode"])
+              == "engine_sampling"]
+    verified = sorted(int(r["step"]) for r in synced if r.get("received_weights_digest") == r["weights_digest"])
+    mismatched = sorted(int(r["step"]) for r in synced
+                        if r.get("received_weights_digest") not in (None, r["weights_digest"]))
+    unverified = sum(r.get("received_weights_digest") is None for r in rollouts)
     loss = worker.get("loss", {})
     stats = worker.get("stats", {})
     logged = [r for r in log_history if any(k.startswith(METRIC_PREFIX) for k in r)]
@@ -353,7 +459,9 @@ def adapter_checks(*, rollouts: list[dict], updates: list[dict], worker: dict, r
         "batch_keys": {"ok": bool(rollouts) and not any(r["missing"] for r in rollouts),
                        "required": list(ROLLOUT_KEYS), "missing_by_rollout": [r["missing"] for r in rollouts]},
         "mask_holes": {"ok": bool(rollouts) and all(r["mask_hole_rows"] == 0 for r in rollouts),
-                       "rows_with_holes": sum(r["mask_hole_rows"] or 0 for r in rollouts)},
+                       "rows_with_holes": sum(r["mask_hole_rows"] or 0 for r in rollouts),
+                       "refused_rows": sum(len([i for i in r.get("row_ids", []) if i < 0]) for r in rollouts),
+                       "skipped_loss_rows": stats.get("skipped_rows", 0)},
         "row_ids_survive_union_reorder": {
             "ok": bool(updates) and all(u["row_ids_match_rollout"] for u in updates),
             "updates_with_reordered_rows": sum(u["row_order_changed"] for u in updates),
@@ -368,10 +476,14 @@ def adapter_checks(*, rollouts: list[dict], updates: list[dict], worker: dict, r
             "ok": bool(paired) and all(d["engine_sampling"] == d["trainer_scores"] for d in paired.values()),
             "steps_compared": sorted(paired),
             "mismatched_steps": sorted(s for s, d in paired.items() if d["engine_sampling"] != d["trainer_scores"])},
+        "received_weights_equal_rollout_revision": {
+            "ok": bool(rollouts) and unverified == 0 and not mismatched and bool(verified),
+            "verified_steps": verified, "mismatched_steps": mismatched, "unverified_rollouts": unverified},
         "metrics_in_verl_log": {"ok": bool(logged), "logged_steps_with_martingale_metrics": len(logged),
                                 "logged_steps": len(log_history)},
         "optimizer_steps": {"applied": worker.get("applied_steps", 0), "skipped": worker.get("skipped_steps", 0),
                             "loss_time_gathers": worker.get("loss_time_gathers", 0)},
+        "row_id_lookup": worker.get("row_lookup", {}),
     }
     checks["all_ok"] = all(v["ok"] for v in checks.values() if isinstance(v, dict) and "ok" in v)
     return checks

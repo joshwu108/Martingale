@@ -27,8 +27,13 @@ Setup:
 
 Hooks (verl_hooks.py): the driver records each generate_sequences output with
 MartingaleVerlRecorder.on_rollout before reward/balance/correction; the actor worker installs
-wrap_ppo_loss on its loss and counts applied optimizer steps; MartingaleMonitor runs after each
-actor update and its martingale/* metrics go into the actor metrics verl logs.
+wrap_ppo_loss on its loss, counts applied optimizer steps and times its row-id ledger lookups
+(adapter_checks.json "row_id_lookup"); MartingaleMonitor runs after each actor update and its
+martingale/* metrics go into the actor metrics verl logs. verl_served.py swaps verl's vLLM replica
+for one whose worker extension digests every weight sync it receives; each rollout revision binds
+that digest, and adapter_checks.json "received_weights_equal_rollout_revision" compares it with the
+revision's weights digest, the worker's per-step snapshot of the tensors get_per_tensor_param yields
+(a replica that reports none leaves the rollout unverified).
 
 Usage
   pip install modal && modal setup                          # once
@@ -71,6 +76,7 @@ image = (
     .add_local_dir(str(REPO_ROOT / "src"), "/repo/src")
     .add_local_dir(str(REPO_ROOT / "checker"), "/repo/checker")
     .add_local_file(str(_here.parent / "verl_hooks.py"), "/repo/verl_hooks.py")
+    .add_local_file(str(_here.parent / "verl_served.py"), "/repo/verl_served.py")
 )
 app = modal.App("martingale-verl-grpo-vllm")
 hf_cache = modal.Volume.from_name("martingale-hf-cache", create_if_missing=True)
@@ -127,7 +133,15 @@ def make_task_runner():
             from verl.utils.dataset.rl_dataset import collate_fn
             from verl.utils.tracking import Tracking
             from verl.workers.config import HFModelConfig
-            from verl_hooks import DriverHooks, FlightView, WorkerRPC, adapter_checks, capture_logs, worst_tokens
+            from verl_hooks import (
+                DriverHooks,
+                FlightView,
+                ReplicaRPC,
+                WorkerRPC,
+                adapter_checks,
+                capture_logs,
+                worst_tokens,
+            )
 
             from checker.verify_tokens import verify_export
             from martingale.diagnostics import AlarmConfig, decompose, render_markdown
@@ -159,6 +173,8 @@ def make_task_runner():
                 train_dataset=train_dataset, val_dataset=val_dataset, collate_fn=collate_fn,
                 train_sampler=create_rl_sampler(config.data, train_dataset),
             )
+            import verl_served
+            verl_served.install()                        # before init_workers builds the rollout replicas
             trainer.init_workers()
 
             workspace = str(WORK / "ws")
@@ -168,7 +184,8 @@ def make_task_runner():
             trainer.actor_rollout_wg.martingale_install(workspace, tok_digest, overrides)
             view = FlightView(flight)
             monitor = MartingaleMonitor(view, AlarmConfig(), halt_on_error=False)  # record alarms, keep the data
-            hooks = DriverHooks(flight, monitor, view, WorkerRPC(trainer.actor_rollout_wg))
+            hooks = DriverHooks(flight, monitor, view, WorkerRPC(trainer.actor_rollout_wg),
+                                ReplicaRPC(verl_served.servers(trainer)))
             hooks.install(trainer)
             log_history = capture_logs(Tracking)
             started, fit_error = time.time(), None
@@ -187,7 +204,8 @@ def make_task_runner():
                           **hooks.last_status, "worker_lost": True}
             view.worker_stats = status["stats"]
             stats = {"driver": dict(flight.stats), "worker": status["stats"], "applied_steps": status["applied_steps"],
-                     "skipped_steps": status["skipped_steps"], "loss_calls": status["loss"]}
+                     "skipped_steps": status["skipped_steps"], "loss_calls": status["loss"],
+                     "row_lookup": status.get("row_lookup", {})}
             head = flight.head()
             print(f"MARTINGALE_LEDGER_HEAD {head}", flush=True)
             ledger = flight.recorder.ledger

@@ -31,6 +31,10 @@ PROCESSED_LOGPROBS_MODES: frozenset[str] = frozenset({"processed_logprobs", "pro
 RAW_LOGPROBS_MODES: frozenset[str] = frozenset({"raw_logprobs", "raw_logits"})
 
 
+def _is_hex64(v: Any) -> bool:
+    return isinstance(v, str) and len(v) == 64 and all(c in "0123456789abcdef" for c in v)
+
+
 def temperature_applied_for(logprobs_mode: str | None) -> bool | None:
     """Whether an engine reporting in `logprobs_mode` divided by temperature before the log-softmax.
     None when the mode is unknown or not in vLLM's vocabulary (a record written before 2026-10-10
@@ -112,14 +116,50 @@ def _uint8_dtype_for(t: Any):
     return torch.uint8
 
 
+def _weights_entry(name: str, value: Any) -> bytes:
+    """One parameter's bytes in the weights digest: name, dtype, shape, raw bytes (design.md 7.2)."""
+    dtype, shape, raw = _tensor_parts(name, value)
+    return (name.encode("utf-8") + b"\x00" + dtype.encode("ascii") + b"\x00"
+            + ",".join(str(d) for d in shape).encode("ascii") + b"\x00" + raw + b"\xff")
+
+
 def weights_digest(state_dict: Mapping[str, Any]) -> str:
     """BLAKE2b-256 over sorted (name, dtype, shape, raw bytes) of every parameter (design.md 7.2)."""
     h = hashlib.blake2b(digest_size=32)
     for name in sorted(state_dict):
-        dtype, shape, raw = _tensor_parts(name, state_dict[name])
-        h.update(name.encode("utf-8") + b"\x00" + dtype.encode("ascii") + b"\x00"
-                 + ",".join(str(d) for d in shape).encode("ascii") + b"\x00" + raw + b"\xff")
+        h.update(_weights_entry(name, state_dict[name]))
     return h.hexdigest()
+
+
+class ReceivedWeights:
+    """`weights_digest` over (name, tensor) pairs as a rollout replica receives them: in buckets, in
+    the sender's order. Each tensor's bytes are copied on arrival (a transfer buffer is reused after
+    its callback), so the replica holds one CPU copy of the payload until `digest()`.
+
+    It digests what arrived, before the engine loads it: equality with the sender's digest proves the
+    sync delivered those tensors, not that the engine's loader applied them."""
+
+    def __init__(self) -> None:
+        self._entries: dict[str, bytes] = {}
+
+    @property
+    def tensors(self) -> int:
+        return len(self._entries)
+
+    def add(self, named_tensors: Iterable[tuple[str, Any]]) -> None:
+        for name, value in named_tensors:
+            if name in self._entries:
+                raise ValueError(f"parameter {name!r} received twice in one sync")
+            self._entries[name] = _weights_entry(name, value)
+
+    def digest(self) -> str | None:
+        """The weights digest of everything received; None when nothing arrived (no claim)."""
+        if not self._entries:
+            return None
+        h = hashlib.blake2b(digest_size=32)
+        for name in sorted(self._entries):
+            h.update(self._entries[name])
+        return h.hexdigest()
 
 
 def tokenizer_digest(data: bytes | Iterable[bytes]) -> str:
@@ -140,20 +180,25 @@ class LLMRevision:
     step: int
     parent_digest: str = GENESIS_DIGEST
     weights_uri: str | None = None          # outside the digest
+    received_weights_digest: str | None = None   # inside the digest when set; see sync_verified
     digest: str = field(init=False)
 
     def __post_init__(self) -> None:
-        for name in ("weights_digest", "tokenizer_digest", "parent_digest"):
+        names: tuple[str, ...] = ("weights_digest", "tokenizer_digest", "parent_digest")
+        if self.received_weights_digest is not None:
+            names += ("received_weights_digest",)
+        for name in names:
             v = getattr(self, name)
-            if not (isinstance(v, str) and len(v) == 64 and all(c in "0123456789abcdef" for c in v)):
+            if not _is_hex64(v):
                 raise ValueError(f"{name} must be 64 lowercase hex chars, got {v!r}")
         if type(self.step) is not int or self.step < 0:
             raise ValueError("step must be a non-negative int")
         object.__setattr__(self, "digest", digest_json(self.manifest()))
 
     def manifest(self) -> dict[str, Any]:
-        """The digested fields, exactly (design.md 7.1)."""
-        return {
+        """The digested fields, exactly (design.md 7.1). `received_weights_digest` only when the
+        replica reported one, so manifests written before 2026-10-13 digest unchanged."""
+        m: dict[str, Any] = {
             "kind": "llm",
             "weights_digest": self.weights_digest,
             "tokenizer_digest": self.tokenizer_digest,
@@ -161,6 +206,18 @@ class LLMRevision:
             "parent_digest": self.parent_digest,
             "step": self.step,
         }
+        if self.received_weights_digest is not None:
+            m["received_weights_digest"] = self.received_weights_digest
+        return m
+
+    @property
+    def sync_verified(self) -> bool | None:
+        """Whether the rollout replica received exactly the weights this revision names: True or
+        False when it reported a digest of what its last sync delivered, None when it did not (no
+        sync was observed, which is not a match)."""
+        if self.received_weights_digest is None:
+            return None
+        return self.received_weights_digest == self.weights_digest
 
     def to_dict(self) -> dict[str, Any]:
         d = self.manifest()
@@ -176,6 +233,7 @@ class LLMRevision:
             weights_digest=d["weights_digest"], tokenizer_digest=d["tokenizer_digest"],
             sampler=SamplerConfig.from_dict(d["sampler"]), step=int(d["step"]),
             parent_digest=d.get("parent_digest", GENESIS_DIGEST), weights_uri=d.get("weights_uri"),
+            received_weights_digest=d.get("received_weights_digest"),
         )
         if "digest" in d and d["digest"] != rev.digest:
             raise ValueError(f"manifest digest mismatch: stored {d['digest']}, computed {rev.digest}")

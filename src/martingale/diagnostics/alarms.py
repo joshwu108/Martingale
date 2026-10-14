@@ -8,8 +8,12 @@ checked. Two alarms are deliberately distinct:
   weights_unchanged  the TRAINER's weights digest did not change across an
                      optimizer step (broken optimizer, lr 0, frozen model) —
                      exact, from the record.
-  stale_server       a lag-0 token the engine was >= 50% sure of that the
-                     trainer scores > 2 nats lower. Numerics cannot do that;
+  stale_server       observed: the rollout replica reported receiving weights
+                     whose digest differs from the revision's weights digest
+                     (record/revision.py sync_verified; verl adapter). Exact,
+                     needs no floor, fires even when the floor is withheld.
+                     Inferred: a lag-0 token the engine was >= 50% sure of that
+                     the trainer scores > 2 nats lower. Numerics cannot do that;
                      different weights (sync not applied) or inputs can. Found
                      on the first real run: TRL 1.13 colocate served the initial
                      weights for three generations while the trainer trained,
@@ -98,7 +102,16 @@ def evaluate(diag: StepDiagnosis, history: AlarmHistory, cfg: AlarmConfig = Alar
                             "(frozen model, lr 0, or a broken optimizer)",
                             {"weights_digest": diag.new_weights_digests[0], "previous_step": history.last_generation_step}))
 
-    # stale engine: a token the engine was >= 50% sure of that the trainer scores > 2 nats lower.
+    # stale engine, observed: the replica's digest of what its sync delivered is not the revision's weights.
+    if diag.received_mismatches:
+        steps = sorted({m["revision_step"] for m in diag.received_mismatches})
+        alarms.append(Alarm("stale_server", "error", diag.step,
+                            f"the rollout replica reported receiving different weights than the sync payload for "
+                            f"generation revision step(s) {steps}: it generated from weights the trainer did not send "
+                            "at that step (sync not delivered or a stale payload).",
+                            {"observed": True, "received_mismatches": diag.received_mismatches}))
+
+    # stale engine, inferred: a token the engine was >= 50% sure of that the trainer scores > 2 nats lower.
     # bf16 rounding cannot do that; different weights (sync did not apply) or different inputs can.
     # Found on the first real run (2026-10-06): TRL 1.13 colocate served the initial weights for
     # three generations while the trainer trained; the median ratio stayed at 1 the whole time.
@@ -110,7 +123,8 @@ def evaluate(diag: StepDiagnosis, history: AlarmHistory, cfg: AlarmConfig = Alar
                             "trainer: the engine generated from different weights than the trainer scored with "
                             "(weight sync not applied?) or from a different input. Verify with `martingale recompute` "
                             "against the trainer's checkpoint.",
-                            {"n_confident_disagreements": n_conf, "floor": None if floor is None else float(floor)}))
+                            {"observed": False, "n_confident_disagreements": n_conf,
+                             "floor": None if floor is None else float(floor)}))
 
     # floor jump: tail numerics or an engine config change (never alone a stale-server verdict)
     if floor_ok and floor is not None and med is not None and med > 0:

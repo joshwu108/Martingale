@@ -100,3 +100,41 @@ def test_row_ids_and_live_logps_survive_verls_data_path(tmp_path):
         for s in scores:
             engine = bits_to_fraction(seq.tokens[s.position].logprob_bits)
             assert float(bits_to_fraction(s.logprob_bits)) == pytest.approx(float(engine) - SHIFT)
+
+
+def test_multi_turn_hole_row_is_refused_on_verls_data_path(tmp_path):
+    """A response with tool text inside it (response_mask 1 0 1, attention 1 1 1): verl's union,
+    reorder, unpadding and mini/micro-batching carry the -1 row id, the loss path skips that row,
+    and every other row is scored at its own positions."""
+    hole_row = 4                                                   # RESP_LENS[4] == 4
+    flight = MartingaleVerlRecorder(tmp_path / "ws", tokenizer=b"t")
+    gen = rollout_output()
+    gen.batch["response_mask"][hole_row] = torch.tensor([1, 0, 0, 1])
+    flight.on_rollout(gen, step=0, weights={"w": torch.ones(2)})
+    assert flight.stats["mask_hole_rows"] == 1 and flight.stats["sequences"] == len(gen) - 1
+    assert gen.batch[ROW_ID_KEY][hole_row].item() == -1
+
+    batch = gen.union(DataProto(batch=TensorDict({"dummy": torch.zeros(len(gen), 1)}, batch_size=[len(gen)])))
+    batch.reorder(torch.tensor([3, 7, 0, 5, 1, 6, 2, 4]))
+    td = left_right_2_no_padding(batch.to_tensordict())
+
+    def ppo_loss(config, model_output, data, dp_group=None):
+        return torch.tensor(0.0), {}
+
+    loss_fn = partial(wrap_ppo_loss(ppo_loss, flight, step=lambda: 0, weights=lambda: {"w": torch.ones(2)}),
+                      config="actor-config")
+    seen_ids = []
+    for mini in tu.make_iterator(td, mini_batch_size=4, epochs=1, seed=0, dataloader_kwargs={"shuffle": True}):
+        for micro in tu.chunk_tensordict(mini, 2):
+            seen_ids += micro[ROW_ID_KEY].tolist()
+            loss_fn(model_output={"log_probs": live_log_probs(micro)}, data=micro, dp_group=None)
+
+    assert sorted(seen_ids) == [-1] + [i for i in range(len(gen)) if i != hole_row]
+    assert flight.stats["skipped_rows"] == 1 and flight.stats["unmatched_rows"] == 0
+    assert flight.stats["scored_sequences"] == len(gen) - 1
+    assert flight.stats["scored_tokens"] == sum(RESP_LENS) - RESP_LENS[hole_row]
+    ledger = flight.recorder.ledger
+    for seq in ledger.all_sequences():
+        for s in ledger.scores_for(seq.digest):
+            engine = bits_to_fraction(seq.tokens[s.position].logprob_bits)
+            assert float(bits_to_fraction(s.logprob_bits)) == pytest.approx(float(engine) - SHIFT)

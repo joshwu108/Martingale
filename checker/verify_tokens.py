@@ -42,7 +42,10 @@ SAMPLER_OPTIONAL_KEYS = ("logprobs_source", "temperature_applied")
 
 
 MANIFEST_KEYS = frozenset({"kind", "weights_digest", "tokenizer_digest", "sampler", "parent_digest", "step",
-                           "digest", "weights_uri"})
+                           "digest", "weights_uri", "received_weights_digest"})
+# Added 2026-10-13, digested when present: the rollout replica's digest of the weights its last sync
+# delivered. Absent means it reported none; an explicit null is not a canonical form and is a forgery.
+MANIFEST_OPTIONAL_DIGESTED_KEYS = ("received_weights_digest",)
 TOKEN_KEYS = frozenset({"revision_digest", "position", "token_id", "logprob_bits", "topk", "prev_digest", "digest"})
 SEQUENCE_KEYS = frozenset({"actor_id", "sequence_index", "sequence_id", "prompt_digest", "prompt_len",
                            "token_digests", "reward_bits", "prev_sequence_digest", "terminal_digest",
@@ -100,6 +103,9 @@ def verify_revision_manifest(d: dict) -> list[str]:
     for k in ("weights_digest", "tokenizer_digest", "parent_digest"):
         if not _is_hex64(d.get(k)):
             errs.append(f"manifest {k} malformed")
+    for k in MANIFEST_OPTIONAL_DIGESTED_KEYS:
+        if k in d and not _is_hex64(d[k]):
+            errs.append(f"manifest {k} malformed")
     if not _is_int(d.get("step")):
         errs.append("manifest step malformed")
     sampler = d.get("sampler")
@@ -114,7 +120,8 @@ def verify_revision_manifest(d: dict) -> list[str]:
         return errs
     computed = _digest({"kind": "llm", "weights_digest": d["weights_digest"],
                         "tokenizer_digest": d["tokenizer_digest"], "sampler": sampler,
-                        "parent_digest": d["parent_digest"], "step": d["step"]})
+                        "parent_digest": d["parent_digest"], "step": d["step"],
+                        **{k: d[k] for k in MANIFEST_OPTIONAL_DIGESTED_KEYS if k in d}})
     if computed != d.get("digest"):
         errs.append(f"manifest digest mismatch: stored {d.get('digest')}, computed {computed}")
     return errs

@@ -364,7 +364,8 @@ BLAKE2b-256 of the bytes:
   "tokenizer_digest": "<64 hex>",   # BLAKE2b-256 of tokenizer.json bytes (or vocab+merges concatenated)
   "sampler":          {...},        # 7.3, canonical JSON object
   "parent_digest":    "<64 hex>" | GENESIS,
-  "step":             <int>         # learner global step at publish
+  "step":             <int>,        # learner global step at publish
+  "received_weights_digest": "<64 hex>"   # optional, 7.10
 }
 ```
 
@@ -517,6 +518,7 @@ expanded form). Decide (3) only if a real run needs it.
 | Anchor | per-actor heads | one **ledger head** = digest of {per-actor sequence heads, per-sequence score heads, sorted revision set} (`TokenLedger.head()`), recomputed by the checker and compared to `expected_head` | per-actor heads missed re-signed score chains and dropped unreferenced revisions (found by the mutation campaign) |
 | D6 run-length encoding | Phase 1 | **deferred**: storage is one row per token; the canonical form is the expanded one so RLE stays a storage-only change | no real run has needed it yet |
 | D7 recompute tier | deferred to Phase 3 | still deferred; `MartingaleRecorder` records which log-prob source fed the record (`logprobs_source` ∈ engine_sampling / trainer_old_logps / trainer_recompute / trainer_scores; it lived in `logprobs_mode` until 2026-10-10, see 7.3) so tier 2 has what it needs | needs a real engine |
+| Received weights (2026-10-13) | not in 7.1 | optional manifest key `received_weights_digest`, inside the digest when present and absent otherwise (so earlier manifests digest unchanged; an explicit null is a forgery). It is the rollout replica's 7.2 digest of the payload its last weight sync delivered (`ReceivedWeights`), recorded as reported. Equal to `weights_digest`: the sync delivered those weights; different: an observed `stale_server`; absent: no sync claim | the 7.2 weights digest is what the trainer meant to serve; only the replica can say what it received (docs/verl-integration-notes.md) |
 | Storage | `revisions.db` + `ledger.db` gain tables | separate **`tokens.db`** (`llm_revisions`, `sequences`, `tokens` inline in the sequence row, `scores`) with `synchronous=FULL` and `fullfsync=ON` | keeps the exact ledger schema untouched |
 
 | Unbound keys (review 2026-10-06) | not addressed | every object type has an allow-list; any extra key is a forgery, because a downstream reader would otherwise be fed data the digest never covered | found by review, not by the first campaign |
